@@ -1,0 +1,53 @@
+{
+    "manifest_version": 3,
+    "name": "TTT Time Tracker Extension",
+    "version": "1.0",
+    "description": "Monitor time spent on sites defined by PWA TTT.",
+    "permissions": [
+        "storage",
+        "activeTab",
+        "scripting",
+        "tabs",
+        "alarms",
+        "notifications",
+        "declarativeNetRequest"
+    ],
+    "host_permissions": [
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content-script-bundle.js"
+            ]
+        }
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
+    },
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "blocked.html",
+                "injected-ui-bundle.js",
+                "injected-ui-bundle.css",
+                "injected-ui-bundle.js", 
+                "assets/injected-ui-bundle.css"
+            ],
+            "matches": [
+                "<all_urls>"
+            ]
+        }
+    ]
+}
