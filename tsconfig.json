@@ -1,7 +1,56 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
-  ]
+  "compilerOptions": {
+    "target": "ESNext", // Versione ECMAScript di destinazione (ESNext è comune con Vite)
+    "useDefineForClassFields": true, // Opzione raccomandata da Vite per la gestione dei campi di classe
+    "module": "ESNext", // Sistema di moduli da usare (ESNext o NodeNext sono moderni)
+    "moduleResolution": "Bundler", // Come risolvere i moduli (Bundler è raccomandato da Vite/Rollup)
+    "allowJs": true, // Permette file JavaScript nel progetto (utile se hai codice JS esistente)
+    "checkJs": false, // Non controllare i file JS per errori (imposta a true per maggiore rigore)
+    "noEmit": true, // Non emettere file JS/d.ts, Vite/Rollup gestirà il bundling
+    "esModuleInterop": true, // Permette importazioni di moduli CommonJS usando la sintassi ES6
+    "forceConsistentCasingInFileNames": true, // Forza la consistenza nel casing dei nomi dei file
+    "strict": true, // Abilita un set rigoroso di opzioni di type-checking (altamente raccomandato)
+    "skipLibCheck": true, // Salta il controllo dei tipi dei file .d.ts nelle librerie (velocizza la build)
+    "isolatedModules": true, // Assicura che ogni file possa essere compilato indipendentemente (utile per bundler)
+    // Librerie standard incluse:
+    // "DOM" e "DOM.Iterable" sono essenziali per codice che interagisce con l'ambiente browser (content script, popup, injected UI).
+    // "ESNext" include le funzionalità più recenti di JavaScript.
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    // Pacchetti di definizioni di tipo aggiuntivi:
+    // "svelte" - gestito dal plugin @sveltejs/vite-plugin-svelte
+    // "chrome" - fornisce i tipi per le API chrome.*
+    "types": [
+      "svelte",
+      "chrome"
+    ],
+    // Configurazione per gli alias dei percorsi (se li usi, es. $lib in SvelteKit)
+    // Se hai configurato alias in vite.config.ts, configurali anche qui.
+    // Esempio se usi src/lib per $lib:
+    // "paths": {
+    //   "$lib": ["./src/lib"],
+    //   "$lib/*": ["./src/lib/*"]
+    // },
+    "sourceMap": true, // Genera source maps per il debugging
+    "resolveJsonModule": true, // Permette l'importazione di file .json
+    "allowSyntheticDefaultImports": true // Consente importazioni di default sintetiche
+  },
+  "include": [
+    "src/**/*.ts", // Includi tutti i file .ts nella directory src
+    "src/**/*.js", // Includi file .js se allowJs è true
+    "src/**/**/*.svelte", // Includi i file Svelte (gestiti dal plugin)
+    "src/**/*.d.ts", // Includi i file di definizione di tipo
+    "vite.config.ts", // Includi il file di configurazione di Vite
+    // Aggiungi altri percorsi se necessario (es. "test/**/*.ts")
+  ],
+  "exclude": [
+    "node_modules", // Escludi la directory dei moduli
+    "dist", // Escludi la directory di output della build
+    // Escludi altre directory generate automaticamente se presenti
+  ],
+  // Se stai usando SvelteKit, potresti avere un riferimento al suo tsconfig
+  // "references": [{ "path": "./.svelte-kit/tsconfig.json" }]
 }

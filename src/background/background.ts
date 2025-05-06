@@ -1,4 +1,5 @@
-import type { TimeTrackerRuleObj } from "./types/timeTrackerTypes";
+import { TimeTrackerRuleObj } from "../types/timeTrackerTypes";
+import { userDBentry } from "../types/userTypes";
 
 // --- Stato Globale ---
 let timeTrackerRules: TimeTrackerRuleObj[] = [];
@@ -10,8 +11,8 @@ let saveStateTimeout: any = null; // Per il salvataggio debounce/ritardato
 
 // Utilizziamo un Set per blacklistedSites per ricerche più veloci
 let blacklistedSites: Set<string> = new Set(); // Salverà gli identificatori dei siti (es. hostname o dominio)
-
 let pwaOrigin: string | undefined = undefined;
+let userInfo: userDBentry | undefined = undefined
 
 // --- Costanti ---
 const TRACKING_INTERVAL_MS = 1000; // Controlla ogni secondo
@@ -22,7 +23,8 @@ const SAVE_STATE_DELAY_MS = 5000; // Ritardo per il salvataggio dello stato (deb
 
 // Carica lo stato all'avvio dell'estensione
 async function loadState() {
-    const storedData = await chrome.storage.local.get(['timeTrackerRules', 'blacklistedSites', 'pwaOrigin']);
+    const storedData = await chrome.storage.local.get(['timeTrackerRules', 'blacklistedSites', 'pwaOrigin',"userInfo"]);
+    userInfo = storedData.userInfo as userDBentry || undefined
     timeTrackerRules = storedData.timeTrackerRules || [];
     // Converti l'array salvato in un Set
     blacklistedSites = new Set(storedData.blacklistedSites || []);
@@ -67,7 +69,94 @@ async function saveStateImmediate() {
 }
 
 
+function updateRules(rules: TimeTrackerRuleObj[]) {
+    // Mantieni i tempi rimanenti esistenti se le regole corrispondono, altrimenti usa il limite
+    const updatedRules: TimeTrackerRuleObj[] = rules.map((newRule: TimeTrackerRuleObj) => {
+        const existingRule = timeTrackerRules.find(r => r.id === newRule.id);
+        return {
+            ...newRule,
+            //mantiene il remaining time se :
+            //remaining time new rule > remaining time existing rule && la differenza è di meno di 2m
+            remainingTimeMin: existingRule && existingRule.site_or_app_name === newRule.site_or_app_name && existingRule.minutesDailyLimit === newRule.minutesDailyLimit && newRule.minutesDailyLimit - existingRule.remainingTimeMin <= 2
+                ? existingRule.remainingTimeMin
+                : newRule.remainingTimeMin
+        };
+    });
+    timeTrackerRules = updatedRules;//aggiorna lista locale
+    console.log('Background: Regole di tracking aggiornate dalla PWA:', timeTrackerRules);
+    scheduleSaveState(); // Pianifica il salvataggio dopo l'aggiornamento
+
+    checkAndNotifyBlacklist(); // Controlla se la tab attiva è blacklisted con le nuove regole
+
+}
+
 // --- Gestione Comunicazione (Content Script, Popup, PWA) ---
+chrome.runtime.onMessageExternal.addListener(
+    (request, sender, sendResponse) => {
+        console.log('Background: Messaggio esterno (da PWA) ricevuto da', sender.origin, request.type, request.payload);
+
+        // IMPORTANTE: Verifica sempre l'origine del messaggio per sicurezza!
+        const allowedOrigins = [
+            "http://localhost:/*",
+            "https://tuo-dominio-pwa.com" // Aggiungi l'origine della PWA di produzione
+        ];
+
+        if (!sender.origin || !allowedOrigins.includes(sender.origin)) {
+            console.warn("Background: Messaggio esterno da origine non consentita:", sender.origin);
+            sendResponse({ status: 'unauthorized origin' }); // Risposta per l'origine non autorizzata
+            return false; // Indica che non invierai una risposta asincrona (se non gestita, potrebbe causare un errore nella PWA)
+            // O meglio, non fare nulla e chiudere la connessione.
+        }
+
+
+        // Gestisci i tipi di messaggi specifici inviati dalla PWA
+        switch (request.type) {
+            case 'PWA_READY':
+                // Imposta e salva l'origine della PWA
+                if (sender.origin) {
+                    pwaOrigin = sender.origin;
+                    chrome.storage.local.set({ pwaOrigin: pwaOrigin });
+                    console.log('Background: PWA Origin set to:', pwaOrigin);
+                } else {
+                    console.warn('Background: Ricevuto SET_PWA_ORIGIN senza sender.origin.');
+                }
+                if (request.payload) {
+                    userInfo = request.payload as userDBentry
+                    chrome.storage.local.set({ userInfo: userInfo });                     
+                }
+                sendResponse({ status: 'PWA origin processed' }); // Invia una risposta
+                break
+
+            case 'UPDATE_TIME_TRACKER_RULES':
+                // La PWA ha inviato la lista aggiornata dei siti/regole
+                if (Array.isArray(request.payload)) {
+                    // Aggiorna lo stato interno del background script
+                    updateRules(request.payload)
+                    sendResponse({ status: 'rules updated' }); // Invia una risposta di conferma alla PWA
+                } else {
+                    console.warn('Background: UPDATE_TIME_TRACKER_RULES ricevuto con payload non valido.');
+                    sendResponse({ status: 'invalid payload' });
+                }
+                break;
+
+            case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
+                console.log('Background: Ricevuta richiesta regole da PWA.');
+                sendResponse({ timeTrackerRules: timeTrackerRules }); // Invia le regole correnti alla PWA
+                break;
+
+            // Aggiungi qui altri tipi di messaggi che la PWA invia
+
+            default:
+                console.warn('Background: Messaggio esterno di tipo sconosciuto ricevuto:', request.type);
+                sendResponse({ status: 'unknown message type' });
+                break;
+        }
+
+        // Restituisci true per indicare che potresti inviare una risposta in modo asincrono
+        // (anche se sendResponse è chiamata sincrona nel blocco switch, è buona pratica se la risposta può richiedere tempo)
+        return true;
+    }
+);
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Background: Messaggio ricevuto:', request.type, request.payload); // Log dettagliato se serve debug
@@ -75,23 +164,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'UPDATE_TIME_TRACKER_RULES':
             // Aggiorna la lista locale delle regole dalla PWA
             if (Array.isArray(request.payload)) {
-                 // Mantieni i tempi rimanenti esistenti se le regole corrispondono, altrimenti usa il limite
-                 const updatedRules: TimeTrackerRuleObj[] = request.payload.map((newRule: TimeTrackerRuleObj) => {
-                    const existingRule = timeTrackerRules.find(r => r.id === newRule.id);
-                    return {
-                        ...newRule,
-                        //mantiene il remaining time se :
-                        //remaining time new rule > remaining time existing rule && la differenza è di meno di 2m
-                        remainingTimeMin: existingRule && existingRule.site_or_app_name === newRule.site_or_app_name && existingRule.minutesDailyLimit === newRule.minutesDailyLimit && newRule.minutesDailyLimit-existingRule.remainingTimeMin <= 2 
-                            ? existingRule.remainingTimeMin
-                            : newRule.remainingTimeMin
-                    };
-                });
-                timeTrackerRules = updatedRules;//aggiorna lista locale
-                console.log('Background: Regole di tracking aggiornate dalla PWA:', timeTrackerRules);
-                scheduleSaveState(); // Pianifica il salvataggio dopo l'aggiornamento
-
-                checkAndNotifyBlacklist(); // Controlla se la tab attiva è blacklisted con le nuove regole
+                updateRules(request.payload)
             }
             break;
         case 'GET_TIME_TRACKER_RULES':
@@ -105,17 +178,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
             break;
         case 'REQUEST_BLACKLIST_STATUS':
-             // Richiesta dal content script all'avvio della pagina
+            // Richiesta dal content script all'avvio della pagina
             const urlToCheck = request.payload.url;
             console.log('Background: Richiesta stato blacklist per:', urlToCheck);
-            const comparableIdentifier = getComparableSiteIdentifier(urlToCheck, timeTrackerRules);
+            const rule = getComparableSiteIdentifier(urlToCheck);
+            const comparableIdentifier = rule ? rule.site_or_app_name : undefined;
             const isBlacklisted = comparableIdentifier ? blacklistedSites.has(comparableIdentifier) : false;
 
             // Rispondi al content script che ha inviato il messaggio
             if (sender.tab && sender.tab.id) {
-                 chrome.tabs.sendMessage(sender.tab.id, {
+                chrome.tabs.sendMessage(sender.tab.id, {
                     type: 'IS_BLACKLISTED_RESPONSE', // Tipo di risposta specifico
-                    payload: { url: urlToCheck, isBlacklisted: isBlacklisted }
+                    payload: { url: urlToCheck, isBlacklisted: isBlacklisted, rule: rule }
                 }).catch(error => {
                     // Ignora errori comuni dovuti a tab chiuse o script non caricato
                     if (error.message !== "Could not establish connection. Receiving end does not exist.") {
@@ -124,17 +198,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 });
             }
             break;
-        case 'SET_PWA_ORIGIN':
-            // Imposta e salva l'origine della PWA
-            if (sender.origin) {
-                pwaOrigin = sender.origin;
-                chrome.storage.local.set({ pwaOrigin: pwaOrigin });
-                console.log('Background: PWA Origin set to:', pwaOrigin);
-            } else {
-                 console.warn('Background: Ricevuto SET_PWA_ORIGIN senza sender.origin.');
-            }
-            sendResponse({ status: 'PWA origin processed' }); // Invia una risposta
-            break;
+        
 
 
         default:
@@ -160,8 +224,8 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Listener per gli aggiornamenti delle tab (es. navigazione, ricarica)
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-     // Interessato solo agli aggiornamenti della tab attiva e quando l'URL è pronto (status complete)
-     // e solo se l'URL è effettivamente cambiato per evitare notifiche duplicate
+    // Interessato solo agli aggiornamenti della tab attiva e quando l'URL è pronto (status complete)
+    // e solo se l'URL è effettivamente cambiato per evitare notifiche duplicate
     if (tabId === activeTabId && changeInfo.url && tab.status === 'complete' && tab.url !== activeTabUrl) {
         activeTabUrl = tab.url; // Aggiorna l'URL della tab attiva
         console.log('Background: Tab attiva (ID:', tabId, ') URL aggiornato:', activeTabUrl);
@@ -169,10 +233,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         checkAndNotifyBlacklist();
         // La logica di tracking si basa sul timer trackTime che controllerà l'activeTabUrl corrente
     } else if (tabId === activeTabId && tab.status === 'complete' && !changeInfo.url && tab.url !== activeTabUrl) {
-         // Gestisce casi dove l'URL potrebbe non essere in changeInfo ma è aggiornato in tab (raro)
+        // Gestisce casi dove l'URL potrebbe non essere in changeInfo ma è aggiornato in tab (raro)
         activeTabUrl = tab.url;
-         console.log('Background: Tab attiva (ID:', tabId, ') URL aggiornato (from tab object):', activeTabUrl);
-         checkAndNotifyBlacklist();
+        console.log('Background: Tab attiva (ID:', tabId, ') URL aggiornato (from tab object):', activeTabUrl);
+        checkAndNotifyBlacklist();
     }
 });
 
@@ -196,12 +260,12 @@ async function updateActiveTabInfo() {
         try {
             const tab = await chrome.tabs.get(activeTabId);
             // Filtra URL speciali delle estensioni o interne di Chrome dove non si traccia il tempo
-             if (tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
-                 activeTabUrl = tab.url;
-             } else {
-                 activeTabUrl = undefined; // Non tracciare URL speciali
-                 console.log('Background: URL tab attiva (ID:', activeTabId, ') è speciale o non valido:', tab.url);
-             }
+            if (tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
+                activeTabUrl = tab.url;
+            } else {
+                activeTabUrl = undefined; // Non tracciare URL speciali
+                console.log('Background: URL tab attiva (ID:', activeTabId, ') è speciale o non valido:', tab.url);
+            }
         } catch (error) {
             activeTabUrl = undefined; // Tab non trovata o errore
             console.error('Background: Errore nel recupero info tab (ID:', activeTabId, '):\n', error);
@@ -222,7 +286,7 @@ if (trackingInterval === null) {
 
 // Funzione principale per il tracking del tempo (eseguita ogni secondo)
 async function trackTime() {
-    if (!activeTabUrl) {
+    if (!activeTabUrl || (userInfo && !userInfo.timeTrackerActive)) {
         // console.log('Background: Nessuna tab attiva con URL valido da tracciare.'); // Meno log se è normale
         return; // Non c'è nulla da tracciare
     }
@@ -231,8 +295,9 @@ async function trackTime() {
     const matchingRule = findMatchingRule(activeTabUrl);
 
     if (matchingRule) {
-         // Ottieni l'identificatore comparabile per il controllo blacklist
-        const comparableIdentifier = getComparableSiteIdentifier(activeTabUrl, timeTrackerRules);
+        // Ottieni l'identificatore comparabile per il controllo blacklist
+        const rule = getComparableSiteIdentifier(activeTabUrl);
+        const comparableIdentifier = rule ? rule.site_or_app_name : undefined
 
         // Controlla se il sito è blacklisted
         if (comparableIdentifier && blacklistedSites.has(comparableIdentifier)) {
@@ -254,7 +319,7 @@ async function trackTime() {
         if (matchingRule.remainingTimeMin <= 0) {
             console.log(`Background: Limite raggiunto per ${matchingRule.site_or_app_name}`);
             matchingRule.remainingTimeMin = 0; // Assicurati che non vada sotto zero
-            await handleLimitReached(matchingRule);            
+            await handleLimitReached(matchingRule);
         }
 
         // Pianifica il salvataggio dello stato (debounce)
@@ -264,7 +329,7 @@ async function trackTime() {
 
 // Funzione helper per trovare la regola corrispondente all'URL
 function findMatchingRule(url: string): TimeTrackerRuleObj | undefined {
-     // Ottieni l'URL object per analizzare l'hostname
+    // Ottieni l'URL object per analizzare l'hostname
     try {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
@@ -274,15 +339,15 @@ function findMatchingRule(url: string): TimeTrackerRuleObj | undefined {
 
         // Se non trovi una corrispondenza esatta sull'hostname, prova a cercare una corrispondenza sul dominio (suffix)
         if (!rule) {
-             // Questo richiede che rule.site_or_app_name sia un dominio come 'google.com'
+            // Questo richiede che rule.site_or_app_name sia un dominio come 'google.com'
             rule = timeTrackerRules.find(rule => {
-                 // Evita di matchare il dominio con sottodomini se la regola è "com" o "org" etc.
-                 if (rule.site_or_app_name.includes('.')) {
-                     // Controlla se l'hostname termina con '.' + il nome del sito della regola
-                     // Questo copre www.google.com, mail.google.com per una regola "google.com"
-                     return hostname === rule.site_or_app_name || hostname.endsWith('.' + rule.site_or_app_name);
-                 }
-                 return false; // Non matchare domini di primo livello come ".com"
+                // Evita di matchare il dominio con sottodomini se la regola è "com" o "org" etc.
+                if (rule.site_or_app_name.includes('.')) {
+                    // Controlla se l'hostname termina con '.' + il nome del sito della regola
+                    // Questo copre www.google.com, mail.google.com per una regola "google.com"
+                    return hostname === rule.site_or_app_name || hostname.endsWith('.' + rule.site_or_app_name);
+                }
+                return false; // Non matchare domini di primo livello come ".com"
             });
         }
 
@@ -295,31 +360,31 @@ function findMatchingRule(url: string): TimeTrackerRuleObj | undefined {
 }
 
 // Funzione helper per ottenere un identificatore comparabile del sito per blacklist/matching
-function getComparableSiteIdentifier(url: string, rules: TimeTrackerRuleObj[]): string | null {
-     try {
-         const urlObj = new URL(url);
-         const hostname = urlObj.hostname;
+function getComparableSiteIdentifier(url: string): TimeTrackerRuleObj | null {
+    try {
+        const urlObj = new URL(url);
+        //const hostname = urlObj.hostname;
 
-         // Cerca una regola che corrisponda a questo URL
-         const matchingRule = findMatchingRule(url);
+        // Cerca una regola che corrisponda a questo URL
+        const matchingRule = findMatchingRule(url);
 
-         // Se c'è una regola, usa l'identificatore definito nella regola
-         if (matchingRule) {
-             // Decidi se usare hostname o rule.site_or_app_name per l'identificatore blacklist
-             // Se rule.site_or_app_name è un dominio (es. google.com) e matchiamo sottodomini,
-             // è meglio usare rule.site_or_app_name come identificatore blacklist.
-             // Se rule.site_or_app_name è un hostname esatto (es. www.google.com), usiamo quello.
-             // Una strategia semplice è usare sempre rule.site_or_app_name
-             return matchingRule.site_or_app_name;
-         }
+        // Se c'è una regola, usa l'identificatore definito nella regola
+        if (matchingRule) {
+            // Decidi se usare hostname o rule.site_or_app_name per l'identificatore blacklist
+            // Se rule.site_or_app_name è un dominio (es. google.com) e matchiamo sottodomini,
+            // è meglio usare rule.site_or_app_name come identificatore blacklist.
+            // Se rule.site_or_app_name è un hostname esatto (es. www.google.com), usiamo quello.
+            // Una strategia semplice è usare sempre rule.site_or_app_name
+            return matchingRule
+        }
 
-         // Se nessuna regola corrisponde, non abbiamo un identificatore valido per la blacklist
-         return null;
+        // Se nessuna regola corrisponde, non abbiamo un identificatore valido per la blacklist
+        return null;
 
-     } catch (e) {
-         console.error('Background: Errore parsing URL per identificatore comparabile:', url, e);
-         return null;
-     }
+    } catch (e) {
+        console.error('Background: Errore parsing URL per identificatore comparabile:', url, e);
+        return null;
+    }
 }
 
 
@@ -350,24 +415,26 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
 
     // 1. Invia il messaggio al content script della tab attiva (se monitorata)
     if (activeTabId !== null && activeTabUrl !== undefined) {
-         const activeTabComparableIdentifier = getComparableSiteIdentifier(activeTabUrl, timeTrackerRules);
-         // Solo invia se la tab attiva corrisponde al sito blacklisted
-         if (activeTabComparableIdentifier && activeTabComparableIdentifier === rule.site_or_app_name) {
-             try {
-                 console.log(`Background: Invio notifica SITE_BLACKLISTED a tab attiva ${activeTabId}.`);
-                 await chrome.tabs.sendMessage(activeTabId, blacklistMessageToCS);
-             } catch (error:any) {
-                 // Questo errore è comune se lo script non è ancora iniettato o la tab è in uno stato strano
-                  if (error.message !== "Could not establish connection. Receiving end does not exist.") {
+        const associatedRule = getComparableSiteIdentifier(activeTabUrl);
+        const activeTabComparableIdentifier = associatedRule ? associatedRule.site_or_app_name : undefined
+
+        // Solo invia se la tab attiva corrisponde al sito blacklisted
+        if (activeTabComparableIdentifier && activeTabComparableIdentifier === rule.site_or_app_name) {
+            try {
+                console.log(`Background: Invio notifica SITE_BLACKLISTED a tab attiva ${activeTabId}.`);
+                await chrome.tabs.sendMessage(activeTabId, blacklistMessageToCS);
+            } catch (error: any) {
+                // Questo errore è comune se lo script non è ancora iniettato o la tab è in uno stato strano
+                if (error.message !== "Could not establish connection. Receiving end does not exist.") {
                     console.error(`Background: Errore invio SITE_BLACKLISTED a tab attiva ${activeTabId}:`, error);
-                 }
-             }
-         }
+                }
+            }
+        }
     }
 
 
     // 2. Invia il messaggio alla PWA
-     // Controlla se l'origine della PWA è stata impostata
+    // Controlla se l'origine della PWA è stata impostata
     if (pwaOrigin) {
         try {
             // Cerca le tab che corrispondono all'origine della PWA
@@ -389,45 +456,46 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
             }
 
         } catch (error) {
-             console.error(`Background: Errore nell'invio di LIMIT_REACHED alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
+            console.error(`Background: Errore nell'invio di LIMIT_REACHED alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
         }
     } else {
         // L'origine della PWA non è ancora stata impostata.
         console.warn('Background: Origine PWA non impostata, non posso inviare notifica LIMIT_REACHED.');
     }
 
-     // A seconda della regola ('notify & close', 'notify, close & block'),
-     // il content script (della tab attiva) o il background stesso (meno comune)
-     // dovrebbe chiudere la tab o bloccare l'interazione.
-     // L'approccio migliore è che il content script gestisca il blocco/chiusura
-     // in base alla regola ricevuta nel messaggio 'SITE_BLACKLISTED'.
-     // Il background ha già aggiunto il sito alla blacklist globale.
+    // A seconda della regola ('notify & close', 'notify, close & block'),
+    // il content script (della tab attiva) o il background stesso (meno comune)
+    // dovrebbe chiudere la tab o bloccare l'interazione.
+    // L'approccio migliore è che il content script gestisca il blocco/chiusura
+    // in base alla regola ricevuta nel messaggio 'SITE_BLACKLISTED'.
+    // Il background ha già aggiunto il sito alla blacklist globale.
 
-     // Nota: Chiudere una tab dal background usando chrome.tabs.remove(activeTabId)
-     // è un'opzione, ma può essere brusco. Lasciare che il content script
-     // mostri un modal che copre la pagina e/o chiuda la tab offre più flessibilità.
+    // Nota: Chiudere una tab dal background usando chrome.tabs.remove(activeTabId)
+    // è un'opzione, ma può essere brusco. Lasciare che il content script
+    // mostri un modal che copre la pagina e/o chiuda la tab offre più flessibilità.
 }
 
 // Funzione per verificare la blacklist e notificare il content script della tab attiva
 async function checkAndNotifyBlacklist() {
     if (activeTabId !== null && activeTabUrl !== undefined) {
-        const comparableIdentifier = getComparableSiteIdentifier(activeTabUrl, timeTrackerRules);
+        const rule = getComparableSiteIdentifier(activeTabUrl);
+        const comparableIdentifier = rule ? rule.site_or_app_name : undefined
         const isBlacklisted = comparableIdentifier ? blacklistedSites.has(comparableIdentifier) : false;
 
         console.log(`Background: Check blacklist per tab attiva ${activeTabId} (${activeTabUrl}). Blacklisted: ${isBlacklisted}`);
 
         if (activeTabId) { // Assicurati che activeTabId non sia null
-             try {
-                 await chrome.tabs.sendMessage(activeTabId, {
-                     type: 'IS_BLACKLISTED', // Messaggio per notificare lo stato blacklist corrente
-                     payload: { url: activeTabUrl, isBlacklisted: isBlacklisted }
-                 });
-                 // console.log(`Background: Messaggio IS_BLACKLISTED inviato a tab ${activeTabId}`); // Meno log
-             } catch (error:any) {
-                  if (error.message !== "Could not establish connection. Receiving end does not exist.") {
+            try {
+                await chrome.tabs.sendMessage(activeTabId, {
+                    type: 'IS_BLACKLISTED', // Messaggio per notificare lo stato blacklist corrente
+                    payload: { url: activeTabUrl, isBlacklisted: isBlacklisted, rule: rule }
+                });
+                // console.log(`Background: Messaggio IS_BLACKLISTED inviato a tab ${activeTabId}`); // Meno log
+            } catch (error: any) {
+                if (error.message !== "Could not establish connection. Receiving end does not exist.") {
                     console.error(`Background: Errore invio IS_BLACKLISTED a tab ${activeTabId}:`, error);
-                 }
-             }
+                }
+            }
         }
     }
 }
@@ -448,14 +516,14 @@ async function sendUsageUpdateToPWA() {
         return; // Non possiamo inviare aggiornamenti se non sappiamo dove
     }
 
-     // Solo invia se ci sono regole da tracciare
+    // Solo invia se ci sono regole da tracciare
     if (timeTrackerRules.length === 0) {
         // console.log('Background: Nessuna regola di tracking configurata, salto invio aggiornamenti alla PWA.'); // Meno log
         return;
     }
 
     const pwaNotificationMessage = {
-        type: 'USAGE_UPDATE',
+        type: 'RULES_UPDATED_FROM_EXT',
         payload: { timeTrackerRules: timeTrackerRules } // Invia l'intera lista di regole aggiornata
     };
 
@@ -465,14 +533,14 @@ async function sendUsageUpdateToPWA() {
 
         if (pwaTabs.length > 0 && pwaTabs[0].id !== undefined) {
             const pwaTabId = pwaTabs[0].id;
-            // console.log(`Background: Invio USAGE_UPDATE alla tab PWA ${pwaTabId}.`); // Log dettagliato se serve
+            // console.log(`Background: Invio RULES_UPDATED_FROM_EXT alla tab PWA ${pwaTabId}.`); // Log dettagliato se serve
             await chrome.tabs.sendMessage(pwaTabId, pwaNotificationMessage);
         } else {
-            // console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare USAGE_UPDATE.`); // Meno log
+            console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare RULES_UPDATED_FROM_EXT.`); // Meno log
         }
 
     } catch (error) {
-        console.error(`Background: Errore nell'invio di USAGE_UPDATE alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
+        console.error(`Background: Errore nell'invio di RULES_UPDATED_FROM_EXT alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
     }
 }
 
@@ -481,18 +549,18 @@ async function sendUsageUpdateToPWA() {
 
 // Imposta l'allarme per il reset giornaliero della blacklist a mezzanotte
 function setupDailyBlacklistReset() {
-     // Prima, rimuovi allarmi esistenti con lo stesso nome per evitare duplicati
-     chrome.alarms.clear('resetBlacklist', (wasCleared) => {
-         if (wasCleared) {
-             console.log('Background: Allarme resetBlacklist precedente rimosso.');
-         }
-         // Crea il nuovo allarme
-         chrome.alarms.create('resetBlacklist', {
-             when: getMidnightTimestamp(), // Primo reset a mezzanotte successiva
-             periodInMinutes: 24 * 60 // Ripeti ogni giorno
-         });
-         console.log('Background: Allarme resetBlacklist impostato per la mezzanotte successiva.');
-     });
+    // Prima, rimuovi allarmi esistenti con lo stesso nome per evitare duplicati
+    chrome.alarms.clear('resetBlacklist', (wasCleared) => {
+        if (wasCleared) {
+            console.log('Background: Allarme resetBlacklist precedente rimosso.');
+        }
+        // Crea il nuovo allarme
+        chrome.alarms.create('resetBlacklist', {
+            when: getMidnightTimestamp(), // Primo reset a mezzanotte successiva
+            periodInMinutes: 24 * 60 // Ripeti ogni giorno
+        });
+        console.log('Background: Allarme resetBlacklist impostato per la mezzanotte successiva.');
+    });
 
 
     chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -508,10 +576,10 @@ function setupDailyBlacklistReset() {
             // Notifica i content script (opzionale) che la blacklist è stata resettata.
             // Potrebbe essere utile se un content script sta mostrando un modal di blocco.
             broadcastMessageToAllContentScripts({ type: 'BLACKLIST_RESET' });
-             // Notifica anche la PWA del reset
-             if (pwaOrigin) {
-                  sendUsageUpdateToPWA(); // Invia lo stato con i tempi resettati
-             }
+            // Notifica anche la PWA del reset
+            if (pwaOrigin) {
+                sendUsageUpdateToPWA(); // Invia lo stato con i tempi resettati
+            }
         }
     });
 }
@@ -561,8 +629,8 @@ loadState().then(() => {
     // (utile se il browser viene riaperto con tab precedenti)
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs && tabs.length > 0 && tabs[0].id !== undefined) {
-             activeTabId = tabs[0].id;
-             updateActiveTabInfo(); // Aggiorna URL e controlla blacklist per questa tab iniziale
+            activeTabId = tabs[0].id;
+            updateActiveTabInfo(); // Aggiorna URL e controlla blacklist per questa tab iniziale
         }
     });
 

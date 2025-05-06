@@ -16,7 +16,7 @@
         "<all_urls>"
     ],
     "background": {
-        "service_worker": "background.js"
+        "service_worker": "src/background/background.ts"
     },
     "content_scripts": [
         {
@@ -24,16 +24,24 @@
                 "<all_urls>"
             ],
             "js": [
-                "content-script-bundle.js"
+                "src/content-scripts/page_content_script.ts"
             ]
+        },
+        {
+            "matches": [
+               "http://localhost:/*", 
+               "https://tuo-dominio-pwa.com/*"
+            ],
+            "js": ["src/content-scripts/PWA_content_script.ts"], 
+            "run_at": "document_start" 
         }
     ],
     "action": {
-        "default_popup": "popup.html",
+        "default_popup": "src/popup/popup.html",
         "default_icon": {
-            "16": "icons/icon16.png",
-            "48": "icons/icon48.png",
-            "128": "icons/icon128.png"
+            "16": "icons/16x16Logo.png",
+            "48": "icons/48x48Logo.png",
+            "128": "icons/128x128Logo.png"
         }
     },
     "web_accessible_resources": [
@@ -42,12 +50,18 @@
                 "blocked.html",
                 "injected-ui-bundle.js",
                 "injected-ui-bundle.css",
-                "injected-ui-bundle.js", 
+                "injected-ui-bundle.js",
                 "assets/injected-ui-bundle.css"
             ],
             "matches": [
                 "<all_urls>"
             ]
         }
-    ]
+    ],
+    "externally_connectable": {
+        "matches": [
+            "http://localhost:/*",
+            "https://tuo-dominio-pwa.com/*"
+        ]
+    }
 }
