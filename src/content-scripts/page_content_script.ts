@@ -228,7 +228,7 @@ function showFallbackBlockingUI(url: string, rule: TimeTrackerRuleObj | null) {
          goToPwaButton.addEventListener('click', () => {
               console.log("Fallback UI: Reindirizzamento alla PWA.");
               if (window != null && window.top != null) {
-                 window.top.location.href = "http://localhost:3000/timetracker"; // *** Sostituisci con l'URL corretto della tua PWA ***
+                 window.top.location.href = "https://localhost:5173/";
               }
          });
      }
@@ -236,7 +236,6 @@ function showFallbackBlockingUI(url: string, rule: TimeTrackerRuleObj | null) {
      // Impedisci lo scroll
      document.body.style.overflow = 'hidden';
 }
-
 
 // Rimuove la UI di blocco dalla pagina
 function removeBlockingUI() {
@@ -269,8 +268,6 @@ function removeBlockingUI() {
 
     console.log('Content Script: UI di blocco rimossa.');
 }
-
-
 
 // --- Inizializzazione Content Script ---
 

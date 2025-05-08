@@ -1,9 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { TimeTrackerRuleObj } from "../types/timeTrackerTypes";
-  import { SvelteComponent } from "svelte"; // Necessario per il cast in popup.ts, anche se non usato direttamente qui
+  import { userDBentry } from "../types/userTypes";
 
-  // --- Props: Data passed from popup.ts ---
+  // --- Component State ---
+  // 'loading': Show spinner and message
+  // 'ready': Show main content
+  let currentState: "loading" | "ready" = "loading";
+
   // activeTabUrl is passed from popup.ts after fetching it with chrome.tabs.query
   // It can be a string URL, undefined (while loading), or a placeholder message string.
   export let activeTabUrl: string | undefined = undefined;
@@ -14,13 +18,75 @@
   // Theme preference ('light' or 'dark')
   let currentTheme: "light" | "dark" = "light";
   const THEME_STORAGE_KEY = "ttt-theme-preference"; // Key for Chrome storage
+  const LOGIN_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000;
 
   $: if (typeof document !== "undefined") {
     document.body.className = currentTheme;
   }
 
+  function checkLoginStatus() {
+    // Check login status from storage
+    chrome.storage.local.get(
+      ["userInfo", "lastUserInfoUpdateTimestamp"],
+      (result) => {
+        const userInfo: userDBentry | undefined = result.userInfo;
+        const lastUserInfoUpdateTimestamp: number | undefined =
+          result.lastUserInfoUpdateTimestamp;
+        const now = Date.now();
+
+        if (
+          userInfo &&
+          lastUserInfoUpdateTimestamp &&
+          now - lastUserInfoUpdateTimestamp < LOGIN_VALIDITY_DURATION_MS
+        ) {
+          // User is logged in and login is recent (within 24h)
+          console.log(
+            "Popup Svelte: User logged in recently. Transitioning to ready state.",
+          );
+          currentState = "ready";
+          // Immediately request rules since we know the user is ready
+          requestTimeTrackerRules();
+        } else {
+          // User not logged in or login expired
+          console.log(
+            "Popup Svelte: User not logged in or login expired. Showing loading/wait state.",
+          );
+          currentState = "loading";
+          // Stay in loading state, waiting for the PWA_READY signal via background script
+        }
+      },
+    );
+  }
+
+  function requestTimeTrackerRules() {
+    console.log("Popup Svelte: Requesting tracking rules from background.");
+    let reqID = "ID:"+Date.now()
+    // Request the current list of rules from the background script
+    chrome.runtime.sendMessage(
+      { type: "GET_TIME_TRACKER_RULES", requestId : reqID},
+      (response) => {
+        console.log(
+          "Popup Svelte: Received GET_TIME_TRACKER_RULES response:\n",
+          response,
+        );
+        if (response && Array.isArray(response.timeTrackerRules)) {
+          timeTrackerRules = response.timeTrackerRules;
+          console.log(
+            "Popup Svelte: Tracking rules received:",
+            timeTrackerRules,
+          );
+        } else {
+          console.error(
+            "Popup Svelte: Invalid response or missing 'timeTrackerRules' from background.",
+          );
+          // Optionally set a visible message here
+        }
+      },
+    );
+  }
+
   // --- Lifecycle: Actions to perform after mount ---
-  onMount(() => {
+  onMount(async () => {
     console.log(
       "Popup Svelte: Component mounted. Requesting tracking rules from background.",
     );
@@ -46,31 +112,28 @@
       // document.body.className = currentTheme; // If applying to body
     });
 
-    // Request the current list of rules from the background script
-    chrome.runtime.sendMessage(
-      { type: "GET_TIME_TRACKER_RULES" },
-      (response) => {
-        console.log(
-          "Popup Svelte: Received GET_TIME_TRACKER_RULES response:\n",
-          response,
-        );
-        if (response && Array.isArray(response.timeTrackerRules)) {
-          timeTrackerRules = response.timeTrackerRules;
-          console.log(
-            "Popup Svelte: Tracking rules received:",
-            timeTrackerRules,
-          );
-        } else {
-          console.error(
-            "Popup Svelte: Invalid response or missing 'timeTrackerRules' from background.",
-          );
-          // Optionally set a visible message here
-        }
-      },
-    );
+    // --- Logic for Initial State (Loading vs. Ready) ---
+    checkLoginStatus();
 
-    // Listener for real-time updates handled in popup.ts, which updates props here.
-    // No need for another listener directly in this component unless handling component-specific messages.
+    // --- Listener for messages from background script ---
+    // This listener handles the signal that the PWA has logged the user in
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      console.log(
+        "Popup Svelte: Received message from background:",
+        request.type,
+      );
+      if (request.type === "USER_LOGGED_IN_VIA_PWA") {
+        console.log(
+          "Popup Svelte: Received USER_LOGGED_IN_VIA_PWA signal. Checking storage for user info...",
+        );
+
+        checkLoginStatus();
+        // Send an empty response back to acknowledge receipt if needed by sender
+        // sendResponse({ status: "ack" });
+        // Return true if sendResponse will be called async (not strictly needed here as it's sync)
+        // return true;
+      }
+    });
   });
 
   // --- Actions ---
@@ -102,207 +165,291 @@
   // Function to handle click on "Go to TTT PWA" button
   function goToPwa() {
     console.log("Popup Svelte: Opening PWA in a new tab.");
-    // Use the Chrome API to create a new tab
-    chrome.tabs.create({ url: "http://localhost:3000/timetracker" }); // *** Replace with your PWA URL ***
+    // Retrieve PWA origin from storage if available, otherwise use default
+    chrome.storage.local.get(["pwaOrigin"], (result) => {
+      const pwaUrl = result.pwaOrigin || "https://localhost:5173/home"; // Fallback      
+      chrome.tabs.create({ url: pwaUrl });
+    });
   }
 
   // The getSiteInfo function was not used in the template and is removed for clarity.
   // If you need it, add it back and ensure it's correctly implemented.
 </script>
 
-<div class="container {currentTheme}">
-  <div class="theme-switcher">
-    <button on:click={toggleTheme}>
-      {currentTheme === "light" ? "Switch to Dark" : "Switch to Light"}
-    </button>
-  </div>
-
-  <h3>TTT Time Tracker Status</h3>
-
-  <div class="status">
-    Active Tab: <strong>
-      {#if activeTabUrl === undefined}
-        Loading URL...
-      {:else if activeTabUrl}
-        {activeTabUrl}
-      {:else}
-        No active or valid tab
+<div class="app-container {currentTheme} state-{currentState}">
+  {#if currentState === "loading"}
+    <div class="loading-container">
+      <div class="spinner"></div>
+      <h3>Waiting for PWA...</h3>
+      <p>
+        Please log in to the Time Tracker PWA to sync your rules and status.
+      </p>
+      <div class="button-container">
+        <button on:click={goToPwa}>Go to TTT PWA</button>
+      </div>
+      {#if activeTabUrl !== undefined}
+        <div class="status loading-status">
+          Checking Status for: <strong>
+            {#if activeTabUrl}
+              {activeTabUrl}
+            {:else}
+              No active or valid tab
+            {/if}
+          </strong>
+        </div>
       {/if}
-    </strong>
-  </div>
+    </div>
+  {:else if currentState === "ready"}
+    <div class="theme-switcher">
+      <button on:click={toggleTheme}>
+        {currentTheme === "light" ? "Switch to Dark" : "Switch to Light"}
+      </button>
+    </div>
 
-  <h4>Monitored Sites:</h4>
-  {#if timeTrackerRules.length > 0}
-    <ul class="site-list custom-scrollbar">
-      {#each timeTrackerRules as rule (rule.id)}
-        <li class="site-item">
-          <strong>{rule.site_or_app_name}</strong>
-          <span>Daily Limit: {rule.minutesDailyLimit} minutes</span><br />
-          <span
-            class="time-remaining"
-            class:expired={rule.remainingTimeMin <= 0}
-          >
-            Time Remaining: {formatRemainingTime(rule.remainingTimeMin)}
-          </span>
-          {#if rule.remainingTimeMin <= 0}
-            <span class="rule-action">Action: {rule.rule}</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  {:else}
-    <p>No monitored sites configured.</p>
+    <h3>TTT Time Tracker Status</h3>
+
+    <div class="status">
+      Active Tab: <strong>
+        {#if activeTabUrl === undefined}
+          Loading URL...
+        {:else if activeTabUrl}
+          {activeTabUrl}
+        {:else}
+          No active or valid tab
+        {/if}
+      </strong>
+    </div>
+
+    <h4>Monitored Sites:</h4>
+    {#if timeTrackerRules.length > 0}
+      <ul class="site-list custom-scrollbar">
+        {#each timeTrackerRules as rule (rule.id)}
+          <li class="site-item">
+            <strong>{rule.site_or_app_name}</strong>
+            <span>Daily Limit: {rule.minutesDailyLimit} minutes</span><br />
+            <span
+              class="time-remaining"
+              class:expired={rule.remainingTimeMin <= 0}
+            >
+              Time Remaining: {formatRemainingTime(rule.remainingTimeMin)}
+            </span>
+            {#if rule.remainingTimeMin <= 0}
+              <span class="rule-action">Action: {rule.rule}</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p>No monitored sites configured.</p>
+    {/if}
+
+    <div class="button-container">
+      <button on:click={goToPwa}>Go to TTT PWA</button>
+    </div>
   {/if}
-
-  <div class="button-container">
-    <button on:click={goToPwa}>Go to TTT PWA</button>
-  </div>
 </div>
 
 <style>
-  .container {
-    /* Increase width */
-    width: 400px; /* Increased width */
-    min-height: 450px; /* Add a minimum height so it's not too small when empty */
-    max-height: 700px; /* Optional: set max height with overflow if needed */
-    overflow-y: auto; /* Enable scroll if content exceeds max height */
-
+  /* Apply theme variables to the app container */
+  .app-container {
+    /* Match the dimensions of your main container */
+    width: 400px;
+    min-height: 450px;
+    max-height: 700px;
+    overflow-y: auto;
     padding: 15px;
     font-family: sans-serif;
     text-align: center;
-
-    /* Use theme variables */
     background-color: var(--background);
     color: var(--color);
-
-    /* Remove or adjust existing styles from previous versions */
-    margin: 0; /* Popups typically have no margin */
+    margin: 0;
     border: 2px var(--button-border);
     border-radius: 10%;
+    display: flex; /* Use flexbox to center content easily */
+    flex-direction: column; /* Stack content vertically */
+    justify-content: center; /* Center vertically */
+    align-items: center; /* Center horizontally */
   }
 
-  /* Adjust scrollbar for the container if max-height is set */
-  .container::-webkit-scrollbar {
+  /* Adjust scrollbar for the container */
+  .app-container::-webkit-scrollbar {
     width: 8px;
   }
-  .container::-webkit-scrollbar-track {
+  .app-container::-webkit-scrollbar-track {
     background: var(--background);
     border-radius: 4px;
   }
-  .container::-webkit-scrollbar-thumb {
+  .app-container::-webkit-scrollbar-thumb {
     background-color: var(--accent-color);
     border-radius: 4px;
     border: 2px solid var(--background);
   }
 
-  /* Styles for the theme switcher */
-  .theme-switcher {
-    text-align: right; /* Align switcher button to the right */
-    margin-bottom: 10px; /* Space below the switcher */
+  /* Loading State Styles */
+  .loading-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    /* Take up available space within the app-container */
+    flex-grow: 1;
+    padding: 20px;
   }
-  .theme-switcher button {
-    /* Style the switcher button using theme variables */
+
+  .spinner {
+    border: 4px solid var(--button-border);
+    border-top: 4px solid var(--accent-color);
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin-bottom: 20px;
+  }
+
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+
+  .loading-container h3 {
+    color: var(--text-color);
+    margin-bottom: 10px;
+  }
+
+  .loading-container p {
+    color: var(--color);
+    margin-bottom: 20px;
+    text-align: center;
+    font-size: 0.9em;
+  }
+
+  .loading-status {
+    margin-top: 20px;
+    font-size: 0.8em;
+    opacity: 0.7;
+  }
+  .loading-status strong {
+    color: var(--accent-color);
+    display: block;
+  }
+
+  /* Ready State Styles (Keep your existing styles, but make sure they apply correctly inside .app-container) */
+  /* You might need to adjust selectors if your existing styles were applied directly to .container */
+
+  .state-ready .theme-switcher {
+    text-align: right;
+    width: 100%; /* Ensure it takes full width to align button right */
+    margin-bottom: 10px;
+  }
+  .state-ready .theme-switcher button {
     padding: 5px 10px;
     font-size: 0.8em;
     cursor: pointer;
     background-color: var(--button-background);
-    color: var(--color); /* Use theme color */
-    border: 1px solid var(--button-border); /* Use theme border */
+    color: var(--color);
+    border: 1px solid var(--button-border);
     border-radius: 4px;
     transition:
       background-color 0.3s ease,
       border-color 0.3s ease,
       color 0.3s ease;
   }
-  .theme-switcher button:hover {
-    background-color: color-mix(
-      in srgb,
-      var(--accent-color) 30%,
-      transparent
-    ); /* Hover effect using accent */
+  .state-ready .theme-switcher button:hover {
+    background-color: color-mix(in srgb, var(--accent-color) 30%, transparent);
     border-color: var(--accent-color);
-    color: var(--color); /* Ensure text color stays readable */
+    color: var(--color);
   }
 
-  h3,
-  h4 {
+  .state-ready h3,
+  .state-ready h4 {
     text-align: center;
     margin-top: 0;
     margin-bottom: 10px;
-    /* Use theme variables */
     color: var(--text-color);
+    width: 100%; /* Take full width */
   }
 
-  h4 {
+  .state-ready h4 {
     margin-top: 15px;
   }
 
-  .status {
+  .state-ready .status {
     margin-bottom: 20px;
     font-size: 0.9em;
     text-align: center;
     word-break: break-all;
-    /* Use theme variables if needed, otherwise keep default color */
-    color: var(--color); /* Ensure text color respects theme */
+    color: var(--color);
+    width: 100%; /* Take full width */
   }
-  .status strong {
-    /* Use theme variables */
+  .state-ready .status strong {
     color: var(--accent-color);
     display: block;
   }
 
-  .site-list {
+  .state-ready .site-list {
     list-style: none;
     padding: 0;
     margin: 0;
+    width: 100%; /* Ensure list takes full width */
+    max-height: 300px; /* Add max height for the list itself if needed */
+    overflow-y: auto; /* Add scroll to the list if it exceeds max height */
+  }
+  /* Scrollbar for site list if it scrolls */
+  .state-ready .site-list::-webkit-scrollbar {
+    width: 8px;
+  }
+  .state-ready .site-list::-webkit-scrollbar-track {
+    background: var(--background);
+    border-radius: 4px;
+  }
+  .state-ready .site-list::-webkit-scrollbar-thumb {
+    background-color: var(--accent-color);
+    border-radius: 4px;
+    border: 2px solid var(--background);
   }
 
-  .site-item {
+  .state-ready .site-item {
     margin-bottom: 12px;
     padding: 10px;
     border-radius: 5px;
     text-align: left;
-
-    /* Use theme variables for item styling */
-    background-color: var(
-      --site-item-background
-    ); /* Use the theme-specific item background variable */
-    border: 1px solid var(--input-field-border); /* Use theme border variable */
-    color: var(--color); /* Ensure text color inside item respects theme */
+    background-color: var(--site-item-background);
+    border: 1px solid var(--input-field-border);
+    color: var(--color);
   }
 
-  .site-item strong {
+  .state-ready .site-item strong {
     display: block;
     font-size: 1em;
     margin-bottom: 5px;
-    /* Use theme variables */
     color: var(--accent-color);
   }
 
-  .site-item span {
+  .state-ready .site-item span {
     display: block;
     font-size: 0.85em;
     margin-bottom: 3px;
-    /* Use theme variables */
-    color: var(--color); /* Use theme color */
-    opacity: 0.8; /* Make secondary text slightly less prominent */
+    color: var(--color);
+    opacity: 0.8;
   }
 
-  .time-remaining {
+  .state-ready .time-remaining {
     font-weight: bold;
-    /* Keep hardcoded status colors or use theme variables */
-    color: green; /* Standard green */
+    color: green;
     font-size: 0.9em;
   }
 
-  .time-remaining.expired {
-    color: red; /* Standard red */
+  .state-ready .time-remaining.expired {
+    color: red;
   }
 
-  .rule-action {
+  .state-ready .rule-action {
     font-size: 0.8em;
-    /* Keep hardcoded status colors or use theme variables */
-    color: orange; /* Standard orange */
+    color: orange;
     font-weight: bold;
     margin-top: 5px;
     display: block;
@@ -311,10 +458,10 @@
   .button-container {
     text-align: center;
     margin-top: 25px;
+    width: 100%; /* Ensure button container takes full width */
   }
 
   .button-container button {
-    /* Target the button within its container */
     padding: 10px 20px;
     font-size: 1em;
     cursor: pointer;
@@ -322,38 +469,15 @@
     transition:
       background-color 0.3s ease,
       border-color 0.3s ease,
-      color 0.3s ease; /* Include color in transition */
-
-    /* Use theme variables for button */
+      color 0.3s ease;
     background-color: var(--button-background);
-    color: var(--color); /* Use theme color */
-    border: 2px solid var(--button-border); /* Use theme border */
+    color: var(--color);
+    border: 2px solid var(--button-border);
   }
 
   .button-container button:hover {
-    background-color: color-mix(
-      in srgb,
-      var(--accent-color) 30%,
-      transparent
-    ); /* Hover effect using accent */
+    background-color: color-mix(in srgb, var(--accent-color) 30%, transparent);
     border-color: var(--accent-color);
-    color: var(--color); /* Ensure text color stays readable */
-  }
-
-  /* Custom scrollbar styles for site list if needed - applying to .custom-scrollbar class */
-  .custom-scrollbar {
-    /* Add max-height and overflow-y: auto to .site-list if you want scrolling list */
-  }
-  .custom-scrollbar::-webkit-scrollbar {
-    width: 8px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-track {
-    background: var(--background);
-    border-radius: 4px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-thumb {
-    background-color: var(--accent-color);
-    border-radius: 4px;
-    border: 2px solid var(--background);
+    color: var(--color);
   }
 </style>

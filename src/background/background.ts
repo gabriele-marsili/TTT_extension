@@ -8,6 +8,7 @@ let activeTabUrl: string | undefined = undefined;
 let trackingInterval: any = null;
 let pwaUpdateInterval: any = null;
 let saveStateTimeout: any = null; // Per il salvataggio debounce/ritardato
+let ruleRequestMap: Map<string, (response?: any) => void> = new Map()
 
 // Utilizziamo un Set per blacklistedSites per ricerche più veloci
 let blacklistedSites: Set<string> = new Set(); // Salverà gli identificatori dei siti (es. hostname o dominio)
@@ -23,7 +24,7 @@ const SAVE_STATE_DELAY_MS = 5000; // Ritardo per il salvataggio dello stato (deb
 
 // Carica lo stato all'avvio dell'estensione
 async function loadState() {
-    const storedData = await chrome.storage.local.get(['timeTrackerRules', 'blacklistedSites', 'pwaOrigin',"userInfo"]);
+    const storedData = await chrome.storage.local.get(['timeTrackerRules', 'blacklistedSites', 'pwaOrigin', "userInfo"]);
     userInfo = storedData.userInfo as userDBentry || undefined
     timeTrackerRules = storedData.timeTrackerRules || [];
     // Converti l'array salvato in un Set
@@ -85,19 +86,51 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
     timeTrackerRules = updatedRules;//aggiorna lista locale
     console.log('Background: Regole di tracking aggiornate dalla PWA:', timeTrackerRules);
     scheduleSaveState(); // Pianifica il salvataggio dopo l'aggiornamento
-
     checkAndNotifyBlacklist(); // Controlla se la tab attiva è blacklisted con le nuove regole
+
+    //response to waiting requests
+    for (let entry of ruleRequestMap.entries()) {
+        let id = entry[0]
+        let sendResponseCallback = entry[1]
+        sendResponseCallback({ timeTrackerRules: timeTrackerRules })
+        ruleRequestMap.delete(id);
+    }
 
 }
 
+async function askRulesToPWA() {
+    console.log("pwaOrigin in askRulesToPWA = ",pwaOrigin)
+    if (!pwaOrigin) {
+        console.log('Background: Origine PWA non impostata, salto invio aggiornamenti.'); // Meno log
+        return; // Non possiamo inviare aggiornamenti se non sappiamo dove
+    }
+
+    try {
+        // Cerca le tab della PWA
+        const pwaTabs = await chrome.tabs.query({ url: `${pwaOrigin}/*` });
+
+        if (pwaTabs.length > 0 && pwaTabs[0].id !== undefined) {
+            const pwaTabId = pwaTabs[0].id;
+            await chrome.tabs.sendMessage(pwaTabId, { type: "ASK_RULES_FROM_EXT" });
+            console.log("sent message ASK_RULES_FROM_EXT to tab ",pwaTabId)
+        } else {
+            console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare ASK_RULES_FROM_EXT.`); // Meno log
+        }
+
+    } catch (error) {
+        console.error(`Background: Errore nell'invio di ASK_RULES_FROM_EXT alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
+    }
+}
+
 // --- Gestione Comunicazione (Content Script, Popup, PWA) ---
+// da rimuovere (messaggi gestiti con content script)
 chrome.runtime.onMessageExternal.addListener(
     (request, sender, sendResponse) => {
         console.log('Background: Messaggio esterno (da PWA) ricevuto da', sender.origin, request.type, request.payload);
 
         // IMPORTANTE: Verifica sempre l'origine del messaggio per sicurezza!
         const allowedOrigins = [
-            "http://localhost:/*",
+            "https://localhost:5173/",
             "https://tuo-dominio-pwa.com" // Aggiungi l'origine della PWA di produzione
         ];
 
@@ -111,39 +144,6 @@ chrome.runtime.onMessageExternal.addListener(
 
         // Gestisci i tipi di messaggi specifici inviati dalla PWA
         switch (request.type) {
-            case 'PWA_READY':
-                // Imposta e salva l'origine della PWA
-                if (sender.origin) {
-                    pwaOrigin = sender.origin;
-                    chrome.storage.local.set({ pwaOrigin: pwaOrigin });
-                    console.log('Background: PWA Origin set to:', pwaOrigin);
-                } else {
-                    console.warn('Background: Ricevuto SET_PWA_ORIGIN senza sender.origin.');
-                }
-                if (request.payload) {
-                    userInfo = request.payload as userDBentry
-                    chrome.storage.local.set({ userInfo: userInfo });                     
-                }
-                sendResponse({ status: 'PWA origin processed' }); // Invia una risposta
-                break
-
-            case 'UPDATE_TIME_TRACKER_RULES':
-                // La PWA ha inviato la lista aggiornata dei siti/regole
-                if (Array.isArray(request.payload)) {
-                    // Aggiorna lo stato interno del background script
-                    updateRules(request.payload)
-                    sendResponse({ status: 'rules updated' }); // Invia una risposta di conferma alla PWA
-                } else {
-                    console.warn('Background: UPDATE_TIME_TRACKER_RULES ricevuto con payload non valido.');
-                    sendResponse({ status: 'invalid payload' });
-                }
-                break;
-
-            case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
-                console.log('Background: Ricevuta richiesta regole da PWA.');
-                sendResponse({ timeTrackerRules: timeTrackerRules }); // Invia le regole correnti alla PWA
-                break;
-
             // Aggiungi qui altri tipi di messaggi che la PWA invia
 
             default:
@@ -161,22 +161,68 @@ chrome.runtime.onMessageExternal.addListener(
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Background: Messaggio ricevuto:', request.type, request.payload); // Log dettagliato se serve debug
     switch (request.type) {
+
+        case 'PWA_READY':
+            // Imposta e salva l'origine della PWA
+            if (sender.origin) {
+                pwaOrigin = sender.origin;
+                chrome.storage.local.set({ pwaOrigin: pwaOrigin });
+                console.log('Background: PWA Origin set to:', pwaOrigin);
+            } else {
+                console.warn('Background: Ricevuto SET_PWA_ORIGIN senza sender.origin.');
+            }
+            if (request.payload) {
+                userInfo = request.payload as userDBentry
+                chrome.storage.local.set({ userInfo: userInfo });
+                chrome.storage.local.set({ lastUserInfoUpdateTimestamp: Date.now() });
+
+                // send message to popup svelte to notify the user login
+                chrome.runtime.sendMessage({ type: 'USER_LOGGED_IN_VIA_PWA' }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        // L'errore è normale se il popup non è aperto in quel momento
+                        console.warn('Background: Error sending USER_LOGGED_IN_VIA_PWA to popup:', chrome.runtime.lastError.message);
+                    }
+                });
+            }
+            sendResponse({ status: 'PWA origin processed' }); // Invia una risposta
+            break
+
         case 'UPDATE_TIME_TRACKER_RULES':
-            // Aggiorna la lista locale delle regole dalla PWA
-            if (Array.isArray(request.payload)) {
-                updateRules(request.payload)
+            // La PWA ha inviato la lista aggiornata dei siti/regole
+            if (Array.isArray(request.payload.rules)) {
+                // Aggiorna lo stato interno del background script
+                updateRules(request.payload.rules)
+                sendResponse({ status: 'rules updated' }); // Invia una risposta di conferma alla PWA
+            } else {
+                console.warn('Background: UPDATE_TIME_TRACKER_RULES ricevuto con payload non valido.');
+                sendResponse({ status: 'invalid payload' });
             }
             break;
+
+        case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
+            console.log('Background: Ricevuta richiesta regole da PWA.');
+            sendResponse(timeTrackerRules); // Invia le regole correnti alla PWA
+            break;
+
         case 'GET_TIME_TRACKER_RULES':
             // Richiesta dalla PWA o Popup per le regole attuali
-            sendResponse({ timeTrackerRules: timeTrackerRules });
+            console.log("request.requestId = ",request.requestId)
+            if (request.requestId) {
+                ruleRequestMap.set(request.requestId, sendResponse)
+                askRulesToPWA()
+            } else {
+                sendResponse({ timeTrackerRules: timeTrackerRules });
+            }
+
             break;
+
         case 'GET_ACTIVE_TAB':
             // Richiesta dallo script popup per lo stato attuale
             sendResponse({
                 activeTabUrl: activeTabUrl,
             });
             break;
+
         case 'REQUEST_BLACKLIST_STATUS':
             // Richiesta dal content script all'avvio della pagina
             const urlToCheck = request.payload.url;
@@ -198,7 +244,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 });
             }
             break;
-        
+
 
 
         default:

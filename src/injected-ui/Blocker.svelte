@@ -47,7 +47,7 @@
             // Assicurati che l'origine della PWA sia corretta.
             // Questo reindirizzerà la tab corrente.
             if (window != null && window.top != null) {
-                window.top.location.href = "http://localhost:3000/timetracker"; // *** Sostituisci con l'URL corretto della tua PWA ***
+                window.top.location.href = "https://localhost:5173/"; // *** Sostituisci con l'URL corretto della tua PWA ***
             }
         }
     }

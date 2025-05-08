@@ -29,7 +29,7 @@
         },
         {
             "matches": [
-               "http://localhost:/*", 
+               "https://localhost:5173/*", 
                "https://tuo-dominio-pwa.com/*"
             ],
             "js": ["src/content-scripts/PWA_content_script.ts"], 
@@ -60,7 +60,7 @@
     ],
     "externally_connectable": {
         "matches": [
-            "http://localhost:/*",
+            "https://localhost:5173/",
             "https://tuo-dominio-pwa.com/*"
         ]
     }
