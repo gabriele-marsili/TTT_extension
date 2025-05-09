@@ -58,6 +58,14 @@ async function saveState() {
     // Salva il Set come Array
     await chrome.storage.local.set({ timeTrackerRules, blacklistedSites: Array.from(blacklistedSites), pwaOrigin });
     //console.log('Background: Stato salvato'); // Meno log per non intasare la console
+
+    const data = { timeTrackerRules, blacklistedSites: Array.from(blacklistedSites), pwaOrigin }
+    chrome.runtime.sendMessage({ type: 'UPDATED_STATE', data: data }, (response) => {
+        if (chrome.runtime.lastError) {
+            // L'errore è normale se il popup non è aperto in quel momento
+            console.warn('Background: Error sending UPDATED_STATE to popup:', chrome.runtime.lastError.message);
+        }
+    });
 }
 
 // Salva lo stato immediatamente (usato per eventi importanti come limite raggiunto)
@@ -66,7 +74,7 @@ async function saveStateImmediate() {
         clearTimeout(saveStateTimeout); // Annulla qualsiasi salvataggio programmato
     }
     await saveState();
-    console.log('Background: Stato salvato immediatamente.');
+    //console.log('Background: Stato salvato immediatamente.');
 }
 
 
@@ -99,7 +107,7 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
 }
 
 async function askRulesToPWA() {
-    console.log("pwaOrigin in askRulesToPWA = ",pwaOrigin)
+    console.log("pwaOrigin in askRulesToPWA = ", pwaOrigin)
     if (!pwaOrigin) {
         console.log('Background: Origine PWA non impostata, salto invio aggiornamenti.'); // Meno log
         return; // Non possiamo inviare aggiornamenti se non sappiamo dove
@@ -112,7 +120,7 @@ async function askRulesToPWA() {
         if (pwaTabs.length > 0 && pwaTabs[0].id !== undefined) {
             const pwaTabId = pwaTabs[0].id;
             await chrome.tabs.sendMessage(pwaTabId, { type: "ASK_RULES_FROM_EXT" });
-            console.log("sent message ASK_RULES_FROM_EXT to tab ",pwaTabId)
+            console.log("sent message ASK_RULES_FROM_EXT to tab ", pwaTabId)
         } else {
             console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare ASK_RULES_FROM_EXT.`); // Meno log
         }
@@ -202,14 +210,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
             console.log('Background: Ricevuta richiesta regole da PWA.');
             sendResponse(timeTrackerRules); // Invia le regole correnti alla PWA
+            
             break;
 
         case 'GET_TIME_TRACKER_RULES':
             // Richiesta dalla PWA o Popup per le regole attuali
-            console.log("request.requestId = ",request.requestId)
+            console.log("request.requestId = ", request.requestId)
             if (request.requestId) {
                 ruleRequestMap.set(request.requestId, sendResponse)
                 askRulesToPWA()
+                return true; //sendresponse asincrona
             } else {
                 sendResponse({ timeTrackerRules: timeTrackerRules });
             }
@@ -245,14 +255,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
             break;
 
-
-
         default:
             console.warn('Background: Messaggio di tipo sconosciuto ricevuto:', request.type);
             break;
     }
     // Restituisci true se vuoi che sendResponse sia asincrona
-    return true;
+    //return true;
 });
 
 
@@ -333,21 +341,18 @@ if (trackingInterval === null) {
 // Funzione principale per il tracking del tempo (eseguita ogni secondo)
 async function trackTime() {
     if (!activeTabUrl || (userInfo && !userInfo.timeTrackerActive)) {
-        // console.log('Background: Nessuna tab attiva con URL valido da tracciare.'); // Meno log se è normale
+        console.log('Background: Nessuna tab attiva con URL valido da tracciare.'); // Meno log se è normale
         return; // Non c'è nulla da tracciare
     }
 
     // Trova la regola che corrisponde all'URL della tab attiva
     const matchingRule = findMatchingRule(activeTabUrl);
-
     if (matchingRule) {
         // Ottieni l'identificatore comparabile per il controllo blacklist
         const rule = getComparableSiteIdentifier(activeTabUrl);
         const comparableIdentifier = rule ? rule.site_or_app_name : undefined
-
         // Controlla se il sito è blacklisted
         if (comparableIdentifier && blacklistedSites.has(comparableIdentifier)) {
-            console.log(`Background: Sito ${comparableIdentifier} blacklisted. Tracking saltato.`); // Meno log
             // Se il sito è blacklisted, non tracciare il tempo, ma assicurati che il content script sappia
             // Questo è gestito da checkAndNotifyBlacklist negli eventi onActivated/onUpdated,
             // ma potresti volerlo rinforzare qui se necessario (probabilmente non serve ogni secondo).
@@ -357,7 +362,9 @@ async function trackTime() {
 
         // Decrementa il tempo rimanente per la regola trovata
         // Converti in secondi, decrementa di 1 secondo, riconverti in minuti
+        //console.log(`remaining time before decrease : ${matchingRule.remainingTimeMin} (rule ${matchingRule.site_or_app_name})`)
         matchingRule.remainingTimeMin = parseFloat(((matchingRule.remainingTimeMin * 60 - 1) / 60).toFixed(4)); // Usiamo toFixed per gestire la precisione
+        //console.log(`remaining time after decrease : ${matchingRule.remainingTimeMin} (rule ${matchingRule.site_or_app_name})`)
 
         // console.log(`Background: Tracciando ${matchingRule.site_or_app_name}. Rimanente: ${matchingRule.remainingTimeMin} min`); // Log dettagliato se serve
 
@@ -369,33 +376,92 @@ async function trackTime() {
         }
 
         // Pianifica il salvataggio dello stato (debounce)
-        scheduleSaveState();
+        await saveStateImmediate()
     }
 }
 
 // Funzione helper per trovare la regola corrispondente all'URL
 function findMatchingRule(url: string): TimeTrackerRuleObj | undefined {
-    // Ottieni l'URL object per analizzare l'hostname
+    // Ottieni l'URL object per analizzare l'hostname e il percorso
     try {
         const urlObj = new URL(url);
         const hostname = urlObj.hostname;
+        // Combina hostname e pathname per una ricerca più ampia
+        const hostnameAndPath = hostname + urlObj.pathname;
+        let rule;
 
-        // Cerca una regola che corrisponda all'hostname esatto
-        let rule = timeTrackerRules.find(rule => rule.site_or_app_name === hostname);
+        // 1. Cerca una regola che corrisponda all'hostname esatto (case-insensitive)
+        rule = timeTrackerRules.find(rule => rule.site_or_app_name.toLowerCase() === hostname.toLowerCase());
 
-        // Se non trovi una corrispondenza esatta sull'hostname, prova a cercare una corrispondenza sul dominio (suffix)
+        // 2. Se non trovi una corrispondenza esatta sull'hostname, prova a cercare una corrispondenza sul dominio (suffix)
+        // Questo richiede che rule.site_or_app_name sia un dominio come 'google.com'
         if (!rule) {
-            // Questo richiede che rule.site_or_app_name sia un dominio come 'google.com'
             rule = timeTrackerRules.find(rule => {
                 // Evita di matchare il dominio con sottodomini se la regola è "com" o "org" etc.
                 if (rule.site_or_app_name.includes('.')) {
-                    // Controlla se l'hostname termina con '.' + il nome del sito della regola
+                    const ruleDomain = rule.site_or_app_name.toLowerCase();
+                    const hostnameLower = hostname.toLowerCase();
+                    // Controlla se l'hostname è esattamente il dominio della regola
+                    // O se l'hostname termina con '.' + il nome del sito della regola
                     // Questo copre www.google.com, mail.google.com per una regola "google.com"
-                    return hostname === rule.site_or_app_name || hostname.endsWith('.' + rule.site_or_app_name);
+                    // Aggiungiamo anche il caso in cui l'hostname potrebbe essere un sottodominio che inizia con il nome della regola
+                    // (es. google.com matchato con google.cloud.google.com, anche se meno comune per questo tipo di regole)
+                    // La condizione principale `endsWith('.' + ruleDomain)` è la più importante per i sottodomini.
+                    return hostnameLower === ruleDomain || hostnameLower.endsWith('.' + ruleDomain);
+                    // || hostnameLower.startsWith(ruleDomain + '.'); // Questa parte è meno comune e potrebbe causare falsi positivi, la manteniamo commentata per ora
                 }
                 return false; // Non matchare domini di primo livello come ".com"
             });
+
+
         }
+
+        // 3. Se ancora non trovi una corrispondenza, cerca il nome della regola (o una sua versione)
+        //    nel nome host O nel percorso. Questo è un approccio più generale.
+        //    Potrebbe matchare "YouTube" con un URL che contiene "youtube" o "youtube.com" nel hostname o nel path.
+        if (!rule) {
+            rule = timeTrackerRules.find(rule => {
+                const ruleNameLower = rule.site_or_app_name.toLowerCase();
+                const hostnameAndPathLower = hostnameAndPath.toLowerCase();
+
+                // Strategia: cerchiamo la versione lowercased del nome della regola,
+                // ed eventualmente la versione con ".com" aggiunto se il nome non è già un dominio,
+                // all'interno del hostname e pathname combinati.
+                // Questo è un approccio euristico e potrebbe avere falsi positivi,
+                // ma risponde al requisito di essere generale e copre l'esempio di YouTube.
+
+                const searchStrings = [ruleNameLower];
+
+                // Se il nome della regola non contiene un punto (probabilmente non è già un dominio)
+                // e ha almeno 3 caratteri (per evitare match banali come 'it', 'fr', etc.),
+                // proviamo a cercare anche la versione con .com
+                if (!ruleNameLower.includes('.') && ruleNameLower.length > 2) {
+                    searchStrings.push(ruleNameLower + ".com");
+                }
+
+                // Controlla se una delle stringhe di ricerca è inclusa nel hostname e pathname (minuscolo)
+                // Aggiungiamo controlli per evitare match parziali indesiderati (es. "tube" in "toothpaste")
+                // rendendo la ricerca un po' più robusta, cercando come "parola" (circondata da non-caratteri alfanumerici o inizio/fine stringa)
+                return searchStrings.some(searchStr => {
+                    // Creiamo una regex per cercare la stringa esatta come "parola"
+                    // \b match una boundary di parola. [.\/]? gestisce separatori comuni tra hostname/path
+                    const regex = new RegExp(`(?:^|[.\\/\\-_])` + searchStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + `(?:[.\\/\\-_]|$)`);
+
+                    // Testiamo sia l'inclusione semplice (meno sicura) sia la regex (più sicura)
+                    // Per essere più generali ma minimizzare falsi positivi, usiamo la regex sul hostnameAndPath.
+                    // In alternativa, una semplice inclusione (`.includes(searchStr)`) è più "generale" ma meno precisa.
+                    // Optiamo per la regex per un compromesso migliore tra generalità e precisione.
+
+                    return regex.test(hostnameAndPathLower);
+
+                    // Se preferisci la massima generalità (con più rischio di falsi positivi), usa solo .includes():
+                    // return hostnameAndPathLower.includes(searchStr);
+                });
+
+            });
+            //console.log("rule found by substring (regex word boundary) in hostname and path: ", rule);
+        }
+
 
         return rule;
 
@@ -533,13 +599,13 @@ async function checkAndNotifyBlacklist() {
         if (activeTabId) { // Assicurati che activeTabId non sia null
             try {
                 await chrome.tabs.sendMessage(activeTabId, {
-                    type: 'IS_BLACKLISTED', // Messaggio per notificare lo stato blacklist corrente
+                    type: 'IS_BLACKLISTED_RESPONSE', // Messaggio per notificare lo stato blacklist corrente
                     payload: { url: activeTabUrl, isBlacklisted: isBlacklisted, rule: rule }
                 });
-                // console.log(`Background: Messaggio IS_BLACKLISTED inviato a tab ${activeTabId}`); // Meno log
+                // console.log(`Background: Messaggio IS_BLACKLISTED_RESPONSE inviato a tab ${activeTabId}`); // Meno log
             } catch (error: any) {
                 if (error.message !== "Could not establish connection. Receiving end does not exist.") {
-                    console.error(`Background: Errore invio IS_BLACKLISTED a tab ${activeTabId}:`, error);
+                    console.error(`Background: Errore invio IS_BLACKLISTED_RESPONSE a tab ${activeTabId}:`, error);
                 }
             }
         }

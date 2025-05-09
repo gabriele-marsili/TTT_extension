@@ -53,32 +53,37 @@ window.addEventListener('message', (event) => {
     console.log("PWA Bridge Content Script: Messaggio ricevuto dal client PWA:", messageFromPwa.type, messageFromPwa.payload);
 
     // Inoltra il messaggio al Background Script dell'ext
-    chrome.runtime.sendMessage({
-        type: messageFromPwa.type, // Tipo di messaggio dalla PWA
-        payload: messageFromPwa.payload,// Payload dalla PWA
-        requestId: messageFromPwa.requestId
-    }, (responseFromBackground) => {
-        console.log("PWA Bridge Content Script: Risposta ricevuta da background per request ID", messageFromPwa.requestId, ":", responseFromBackground);
+    try {
 
-        if (chrome.runtime.lastError) {
-            console.error("PWA Bridge Content Script: Errore invio messaggio a background (callback):", chrome.runtime.lastError.message);
-            // Inoltra l'errore alla PWA usando postMessage, mantenendo l'ID della richiesta
-            window.postMessage({
-                type: messageFromPwa.type + '_RESPONSE', // Tipo di risposta
-                requestId: messageFromPwa.requestId,   // ID della richiesta originale
-                error: chrome.runtime.lastError.message, // Messaggio di errore
-                source: 'TTT_EXTENSION_BRIDGE'         // Identifica la fonte
-            }, event.origin);
-        } else {
-            // Inoltra la risposta del background alla PWA usando postMessage, mantenendo l'ID della richiesta
-            window.postMessage({
-                type: messageFromPwa.type + '_RESPONSE', // Tipo di risposta
-                requestId: messageFromPwa.requestId,   // ID della richiesta originale
-                payload: responseFromBackground,      // La risposta ricevuta dal background
-                source: 'TTT_EXTENSION_BRIDGE'         // Identifica la fonte
-            }, event.origin);
-        }
-    });
+        chrome.runtime.sendMessage({
+            type: messageFromPwa.type, // Tipo di messaggio dalla PWA
+            payload: messageFromPwa.payload,// Payload dalla PWA
+            requestId: messageFromPwa.requestId
+        }, (responseFromBackground) => {
+            console.log("PWA Bridge Content Script: Risposta ricevuta da background per request ID", messageFromPwa.requestId, ":", responseFromBackground);
+
+            if (chrome.runtime.lastError) {
+                console.error("PWA Bridge Content Script: Errore invio messaggio a background (callback):", chrome.runtime.lastError.message);
+                // Inoltra l'errore alla PWA usando postMessage, mantenendo l'ID della richiesta
+                window.postMessage({
+                    type: messageFromPwa.type + '_RESPONSE', // Tipo di risposta
+                    requestId: messageFromPwa.requestId,   // ID della richiesta originale
+                    error: chrome.runtime.lastError.message, // Messaggio di errore
+                    source: 'TTT_EXTENSION_BRIDGE'         // Identifica la fonte
+                }, event.origin);
+            } else {
+                // Inoltra la risposta del background alla PWA usando postMessage, mantenendo l'ID della richiesta
+                window.postMessage({
+                    type: messageFromPwa.type + '_RESPONSE', // Tipo di risposta
+                    requestId: messageFromPwa.requestId,   // ID della richiesta originale
+                    payload: responseFromBackground,      // La risposta ricevuta dal background
+                    source: 'TTT_EXTENSION_BRIDGE'         // Identifica la fonte
+                }, event.origin);
+            }
+        });
+    } catch (error) {
+        console.error("error in send message to background script of ext by pwa content script:\n",error)
+    }
 
     // Restituisci true qui se ti aspetti che sendResponse() venga chiamata.
     // È buona pratica se la callback di sendMessage può essere asincrona (anche se per CS->BG è solitamente sincrona).

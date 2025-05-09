@@ -9,7 +9,6 @@ import { TimeTrackerRuleObj } from '../types/timeTrackerTypes';
 // --- Definizione esplicita dei tipi delle props attese ---
 // Questa interfaccia riflette le 'export let' props definite in Popup.svelte
 interface IPopupProps {
-    activeTabUrl: string;
     timeTrackerRules: TimeTrackerRuleObj[]; // timeTrackerRules è un array di TimeTrackerRuleObj
 }
 
@@ -33,7 +32,6 @@ if (appMountPoint) {
         // Crea una nuova istanza del componente Svelte principale
         // Passa le props iniziali tipizzate esplicitamente
         const initialProps: IPopupProps = {
-            activeTabUrl: "default value", // Valore iniziale, può essere undefined
             timeTrackerRules: []     // Valore iniziale, un array vuoto del tipo corretto
         };
         console.log("Popup: mount point:", appMountPoint);
@@ -46,26 +44,7 @@ if (appMountPoint) {
         console.log('Popup: App Svelte montata nel DOM.');
 
         // --- Recupera dati iniziali e passali all'app Svelte ---
-
-        // 1. Recupera l'URL della tab attiva usando le API di Chrome
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs && tabs.length > 0) {
-                const activeTab = tabs[0];
-                console.log('Popup: URL tab attiva recuperato:', activeTab.url);
-                if (appInstance && appInstance.$set) {
-                    // Passa un oggetto parziale tipizzato per $set
-                    const update: Partial<IPopupProps> = { activeTabUrl: activeTab.url };
-                    appInstance.$set(update);
-                }
-            } else {
-                console.log('Popup: Nessuna tab attiva trovata.');
-                if (appInstance && appInstance.$set) {
-                    const update: Partial<IPopupProps> = { activeTabUrl: 'Nessuna tab attiva o valida' };
-                    appInstance.$set(update);
-                }
-            }
-        });
-
+       
         // 2. Ascolta i messaggi dal background script per aggiornamenti in tempo reale.
         chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (request.type === "USAGE_UPDATE" || request.type === "UPDATE_SITE_TIMERS") {
