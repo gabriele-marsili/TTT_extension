@@ -9,7 +9,7 @@ let trackingInterval: any = null;
 let pwaUpdateInterval: any = null;
 let saveStateTimeout: any = null; // Per il salvataggio debounce/ritardato
 let ruleRequestMap: Map<string, (response?: any) => void> = new Map()
-
+const prefisso = "[Ext backrgound script] "
 // Utilizziamo un Set per blacklistedSites per ricerche più veloci
 let blacklistedSites: Set<string> = new Set(); // Salverà gli identificatori dei siti (es. hostname o dominio)
 let pwaOrigin: string | undefined = undefined;
@@ -19,6 +19,10 @@ let userInfo: userDBentry | undefined = undefined
 const TRACKING_INTERVAL_MS = 1000; // Controlla ogni secondo
 const PWA_UPDATE_INTERVAL_MS = 60000; // Invia aggiornamenti alla PWA ogni minuto
 const SAVE_STATE_DELAY_MS = 5000; // Ritardo per il salvataggio dello stato (debounce)
+
+// Mappe per tenere traccia delle porte attive, con la tab ID come chiave
+let bridgePWAport: chrome.runtime.Port | null = null
+const bridgeContentScriptPortMap = new Map<number, chrome.runtime.Port>();
 
 // --- Gestione Stato (Carica/Salva) ---
 
@@ -63,7 +67,7 @@ async function saveState() {
     chrome.runtime.sendMessage({ type: 'UPDATED_STATE', data: data }, (response) => {
         if (chrome.runtime.lastError) {
             // L'errore è normale se il popup non è aperto in quel momento
-            console.warn('Background: Error sending UPDATED_STATE to popup:', chrome.runtime.lastError.message);
+            console.warn(prefisso + ' Error sending UPDATED_STATE to popup:', chrome.runtime.lastError.message);
         }
     });
 }
@@ -76,7 +80,6 @@ async function saveStateImmediate() {
     await saveState();
     //console.log('Background: Stato salvato immediatamente.');
 }
-
 
 function updateRules(rules: TimeTrackerRuleObj[]) {
     // Mantieni i tempi rimanenti esistenti se le regole corrispondono, altrimenti usa il limite
@@ -92,6 +95,18 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
         };
     });
     timeTrackerRules = updatedRules;//aggiorna lista locale
+
+    const activeRuleSiteNames = new Set<string>(
+        rules.map(rule => rule.site_or_app_name)
+    );
+
+    blacklistedSites.forEach(site => {
+        if (!activeRuleSiteNames.has(site)) {
+            blacklistedSites.delete(site);
+        }
+    });
+
+
     console.log('Background: Regole di tracking aggiornate dalla PWA:', timeTrackerRules);
     scheduleSaveState(); // Pianifica il salvataggio dopo l'aggiornamento
     checkAndNotifyBlacklist(); // Controlla se la tab attiva è blacklisted con le nuove regole
@@ -106,115 +121,134 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
 
 }
 
-async function askRulesToPWA() {
-    console.log("pwaOrigin in askRulesToPWA = ", pwaOrigin)
-    if (!pwaOrigin) {
-        console.log('Background: Origine PWA non impostata, salto invio aggiornamenti.'); // Meno log
-        return; // Non possiamo inviare aggiornamenti se non sappiamo dove
+/**
+ * send ask rules from ext request to pwa content script that will bridge it to PWA
+ * @returns void
+ */
+function askRulesToPWA() {
+    if (!bridgePWAport) {
+        console.error(prefisso + "bridgePWAport is null in ask rules to pwa")
     }
 
-    try {
-        // Cerca le tab della PWA
-        const pwaTabs = await chrome.tabs.query({ url: `${pwaOrigin}/*` });
-
-        if (pwaTabs.length > 0 && pwaTabs[0].id !== undefined) {
-            const pwaTabId = pwaTabs[0].id;
-            await chrome.tabs.sendMessage(pwaTabId, { type: "ASK_RULES_FROM_EXT" });
-            console.log("sent message ASK_RULES_FROM_EXT to tab ", pwaTabId)
-        } else {
-            console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare ASK_RULES_FROM_EXT.`); // Meno log
-        }
-
-    } catch (error) {
-        console.error(`Background: Errore nell'invio di ASK_RULES_FROM_EXT alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
-    }
+    bridgePWAport!.postMessage({ type: "ASK_RULES_FROM_EXT" })
 }
 
-// --- Gestione Comunicazione (Content Script, Popup, PWA) ---
-// da rimuovere (messaggi gestiti con content script)
-chrome.runtime.onMessageExternal.addListener(
-    (request, sender, sendResponse) => {
-        console.log('Background: Messaggio esterno (da PWA) ricevuto da', sender.origin, request.type, request.payload);
+// --- Gestione Comunicazione (Content Script, PWA) ---
 
-        // IMPORTANTE: Verifica sempre l'origine del messaggio per sicurezza!
-        const allowedOrigins = [
-            "https://localhost:5173/",
-            "https://tuo-dominio-pwa.com" // Aggiungi l'origine della PWA di produzione
-        ];
+//litener for PWA bridge port && content script bridge port 
+chrome.runtime.onConnect.addListener(port => {
+    console.log(prefisso + `Connessione in arrivo. Nome porta: "${port.name}".`);
 
-        if (!sender.origin || !allowedOrigins.includes(sender.origin)) {
-            console.warn("Background: Messaggio esterno da origine non consentita:", sender.origin);
-            sendResponse({ status: 'unauthorized origin' }); // Risposta per l'origine non autorizzata
-            return false; // Indica che non invierai una risposta asincrona (se non gestita, potrebbe causare un errore nella PWA)
-            // O meglio, non fare nulla e chiudere la connessione.
+    // Ottieni l'ID della tab da cui proviene la connessione
+    const tabId = port.sender?.tab?.id;
+
+    // Controlla il nome della porta per determinare il tipo di connessione
+    if (port.name === 'TTT_PWA_BRIDGE') { //messages from pwa content script (inoltrati da PWA)        
+        bridgePWAport = port;
+        console.log(prefisso + `Porta PWA_BRIDGE aperta per Tab ID: ${tabId}.`);
+
+        port.onMessage.addListener(async request => {
+            console.log(prefisso + `(PWA Port ${tabId}): Ricevuto`, request.type, request.payload);
+            switch (request.type) {
+                case 'PWA_READY':
+                    // Il content script PWA è pronto
+                    if (port.sender?.origin) {
+                        pwaOrigin = port.sender.origin; // Salva l'origine della PWA
+                        await chrome.storage.local.set({ pwaOrigin });
+                        console.log('Background: PWA Origin set to:', pwaOrigin);
+                    }
+
+                    if (request.payload) {
+                        userInfo = request.payload as userDBentry;
+                        await chrome.storage.local.set({ userInfo, lastUserInfoUpdateTimestamp: Date.now() });
+                        // notifica popup
+                        // send message to popup svelte to notify the user login
+                        chrome.runtime.sendMessage({ type: 'USER_LOGGED_IN_VIA_PWA' }, (response) => {
+                            if (chrome.runtime.lastError) {
+                                // L'errore è normale se il popup non è aperto in quel momento
+                                console.warn(prefisso + ' Error sending USER_LOGGED_IN_VIA_PWA to popup:', chrome.runtime.lastError.message);
+                            }
+                        });
+                    }
+
+                    break;
+                case 'UPDATE_TIME_TRACKER_RULES':
+                    // La PWA sta inviando un aggiornamento delle regole
+                    if (Array.isArray(request.payload.rules)) {
+                        // Qui aggiorni il tuo stato globale `timeTrackerRules` nel background
+                        // e poi chiami la tua funzione `updateRules`
+                        updateRules(request.payload.rules);
+                    } else {
+                        console.error(prefisso + "Invalid payload in update time tracker rules")
+                    }
+                    break;
+                case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
+                    console.log('Background: Ricevuta richiesta regole da PWA.');
+                    const msgContent = {
+                        type: "REQUEST_TIME_TRACKER_RULES_RESPONSE",
+                        payload: timeTrackerRules,
+                        requestId: request.requestId
+                    }
+                    port.postMessage(msgContent); // Invia le regole correnti al PWA content script (bridge) che le inoltra alla PWA
+
+                    break;
+                default:
+                    console.warn(prefisso + ` (PWA Port ${tabId}): Tipo di messaggio sconosciuto:`, request.type);
+            }
+        });
+
+        port.onDisconnect.addListener(() => {
+            console.log(prefisso + `Porta PWA_BRIDGE chiusa per Tab ID: ${tabId}.`);            
+        });
+
+    } else if (port.name === 'TTT_CONTENT_SCRIPT_BRIDGE') {//messages from content script        
+        if (tabId !== undefined) {
+            bridgeContentScriptPortMap.set(tabId, port); // Memorizza la porta
+            console.log(prefisso + `Porta NORMAL_PAGE_BRIDGE aperta per Tab ID: ${tabId}.`);
+
+            port.onMessage.addListener(async request => {
+                console.log(`Background (Normal Page Port ${tabId}): Ricevuto`, request.type, request.payload);
+                switch (request.type) {
+                    case 'REQUEST_BLACKLIST_STATUS':
+                        // La pagina normale richiede lo stato di blacklist
+                        const urlToCheckNormal = request.payload.url as string;
+                        const comparableRuleNormal = getComparableSiteIdentifier(urlToCheckNormal);
+                        let isBlacklistedNormal = comparableRuleNormal ? blacklistedSites.has(comparableRuleNormal.site_or_app_name) : false;
+
+                        if(comparableRuleNormal && comparableRuleNormal.remainingTimeMin > 0){
+                            isBlacklistedNormal = false;
+                            blacklistedSites.delete(comparableRuleNormal.site_or_app_name)
+                            await saveStateImmediate()
+                        }
+                        port.postMessage({
+                            type: 'IS_BLACKLISTED_RESPONSE',
+                            payload: { url: urlToCheckNormal, isBlacklisted: isBlacklistedNormal, rule: comparableRuleNormal },
+                            requestId: request.requestId
+                        });
+                        break;
+                    default:
+                        console.warn(prefisso + ` (Normal Page Port ${tabId}): Tipo di messaggio sconosciuto:`, request.type);
+                }
+            });
+
+            port.onDisconnect.addListener(() => {
+                console.log(prefisso + `Porta NORMAL_PAGE_BRIDGE chiusa per Tab ID: ${tabId}.`);                
+            });
+        } else {
+            console.warn(prefisso + "Connessione NORMAL_PAGE_BRIDGE senza un Tab ID valido.");
+            port.disconnect();
         }
-
-
-        // Gestisci i tipi di messaggi specifici inviati dalla PWA
-        switch (request.type) {
-            // Aggiungi qui altri tipi di messaggi che la PWA invia
-
-            default:
-                console.warn('Background: Messaggio esterno di tipo sconosciuto ricevuto:', request.type);
-                sendResponse({ status: 'unknown message type' });
-                break;
-        }
-
-        // Restituisci true per indicare che potresti inviare una risposta in modo asincrono
-        // (anche se sendResponse è chiamata sincrona nel blocco switch, è buona pratica se la risposta può richiedere tempo)
-        return true;
+    } else {
+        console.warn(prefisso + `Connessione con nome sconosciuto ricevuta: "${port.name}". Disconnessione.`);
+        port.disconnect(); // Disconnetti la porta sconosciuta per sicurezza
     }
-);
+});
 
+// --- Gestione Comunicazione (POPUP.svelte -> backrgound) ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Background: Messaggio ricevuto:', request.type, request.payload); // Log dettagliato se serve debug
     switch (request.type) {
-
-        case 'PWA_READY':
-            // Imposta e salva l'origine della PWA
-            if (sender.origin) {
-                pwaOrigin = sender.origin;
-                chrome.storage.local.set({ pwaOrigin: pwaOrigin });
-                console.log('Background: PWA Origin set to:', pwaOrigin);
-            } else {
-                console.warn('Background: Ricevuto SET_PWA_ORIGIN senza sender.origin.');
-            }
-            if (request.payload) {
-                userInfo = request.payload as userDBentry
-                chrome.storage.local.set({ userInfo: userInfo });
-                chrome.storage.local.set({ lastUserInfoUpdateTimestamp: Date.now() });
-
-                // send message to popup svelte to notify the user login
-                chrome.runtime.sendMessage({ type: 'USER_LOGGED_IN_VIA_PWA' }, (response) => {
-                    if (chrome.runtime.lastError) {
-                        // L'errore è normale se il popup non è aperto in quel momento
-                        console.warn('Background: Error sending USER_LOGGED_IN_VIA_PWA to popup:', chrome.runtime.lastError.message);
-                    }
-                });
-            }
-            sendResponse({ status: 'PWA origin processed' }); // Invia una risposta
-            break
-
-        case 'UPDATE_TIME_TRACKER_RULES':
-            // La PWA ha inviato la lista aggiornata dei siti/regole
-            if (Array.isArray(request.payload.rules)) {
-                // Aggiorna lo stato interno del background script
-                updateRules(request.payload.rules)
-                sendResponse({ status: 'rules updated' }); // Invia una risposta di conferma alla PWA
-            } else {
-                console.warn('Background: UPDATE_TIME_TRACKER_RULES ricevuto con payload non valido.');
-                sendResponse({ status: 'invalid payload' });
-            }
-            break;
-
-        case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
-            console.log('Background: Ricevuta richiesta regole da PWA.');
-            sendResponse(timeTrackerRules); // Invia le regole correnti alla PWA
-            
-            break;
-
-        case 'GET_TIME_TRACKER_RULES':
-            // Richiesta dalla PWA o Popup per le regole attuali
+        case 'GET_TIME_TRACKER_RULES': // Richiesta da Popup per le regole attuali            
             console.log("request.requestId = ", request.requestId)
             if (request.requestId) {
                 ruleRequestMap.set(request.requestId, sendResponse)
@@ -223,45 +257,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             } else {
                 sendResponse({ timeTrackerRules: timeTrackerRules });
             }
-
             break;
-
-        case 'GET_ACTIVE_TAB':
-            // Richiesta dallo script popup per lo stato attuale
-            sendResponse({
-                activeTabUrl: activeTabUrl,
-            });
-            break;
-
-        case 'REQUEST_BLACKLIST_STATUS':
-            // Richiesta dal content script all'avvio della pagina
-            const urlToCheck = request.payload.url;
-            console.log('Background: Richiesta stato blacklist per:', urlToCheck);
-            const rule = getComparableSiteIdentifier(urlToCheck);
-            const comparableIdentifier = rule ? rule.site_or_app_name : undefined;
-            const isBlacklisted = comparableIdentifier ? blacklistedSites.has(comparableIdentifier) : false;
-
-            // Rispondi al content script che ha inviato il messaggio
-            if (sender.tab && sender.tab.id) {
-                chrome.tabs.sendMessage(sender.tab.id, {
-                    type: 'IS_BLACKLISTED_RESPONSE', // Tipo di risposta specifico
-                    payload: { url: urlToCheck, isBlacklisted: isBlacklisted, rule: rule }
-                }).catch(error => {
-                    // Ignora errori comuni dovuti a tab chiuse o script non caricato
-                    if (error.message !== "Could not establish connection. Receiving end does not exist.") {
-                        console.error(`Background: Errore invio IS_BLACKLISTED_RESPONSE a tab ${sender.tab!.id}:`, error);
-                    }
-                });
-            }
-            break;
-
         default:
-            console.warn('Background: Messaggio di tipo sconosciuto ricevuto:', request.type);
+            console.warn(prefisso + ' Messaggio di tipo sconosciuto ricevuto:', request.type);
             break;
+
     }
-    // Restituisci true se vuoi che sendResponse sia asincrona
-    //return true;
-});
+})
+
 
 
 // --- Gestione Eventi Tab del Browser ---
@@ -366,11 +369,11 @@ async function trackTime() {
         matchingRule.remainingTimeMin = parseFloat(((matchingRule.remainingTimeMin * 60 - 1) / 60).toFixed(4)); // Usiamo toFixed per gestire la precisione
         //console.log(`remaining time after decrease : ${matchingRule.remainingTimeMin} (rule ${matchingRule.site_or_app_name})`)
 
-        // console.log(`Background: Tracciando ${matchingRule.site_or_app_name}. Rimanente: ${matchingRule.remainingTimeMin} min`); // Log dettagliato se serve
+        // console.log(prefisso+`Tracciando ${matchingRule.site_or_app_name}. Rimanente: ${matchingRule.remainingTimeMin} min`); // Log dettagliato se serve
 
         // Controlla se il limite è stato raggiunto o superato
         if (matchingRule.remainingTimeMin <= 0) {
-            console.log(`Background: Limite raggiunto per ${matchingRule.site_or_app_name}`);
+            console.log(prefisso + `Limite raggiunto per ${matchingRule.site_or_app_name}`);
             matchingRule.remainingTimeMin = 0; // Assicurati che non vada sotto zero
             await handleLimitReached(matchingRule);
         }
@@ -504,7 +507,7 @@ function getComparableSiteIdentifier(url: string): TimeTrackerRuleObj | null {
 
 // Funzione per gestire il limite raggiunto per una regola
 async function handleLimitReached(rule: TimeTrackerRuleObj) {
-    console.log(`Background: Gestione limite raggiunto per ${rule.site_or_app_name}. Regola: ${rule.rule}`);
+    console.log(prefisso + `Gestione limite raggiunto per ${rule.site_or_app_name}. Regola: ${rule.rule}`);
 
     // Aggiungi il sito (identificatore della regola) alla blacklist
     blacklistedSites.add(rule.site_or_app_name);
@@ -516,7 +519,7 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
     // Messaggio per i content script
     const blacklistMessageToCS = {
         type: 'SITE_BLACKLISTED', // Nuovo tipo di messaggio per notificare la blacklist in tempo reale
-        payload: { siteIdentifier: rule.site_or_app_name, rule: rule }
+        payload: { siteIdentifier: rule.site_or_app_name, rule: rule, isBlacklisted : true}
     };
 
     // Messaggio per la PWA
@@ -533,13 +536,15 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
         // Solo invia se la tab attiva corrisponde al sito blacklisted
         if (activeTabComparableIdentifier && activeTabComparableIdentifier === rule.site_or_app_name) {
             try {
-                console.log(`Background: Invio notifica SITE_BLACKLISTED a tab attiva ${activeTabId}.`);
-                await chrome.tabs.sendMessage(activeTabId, blacklistMessageToCS);
-            } catch (error: any) {
-                // Questo errore è comune se lo script non è ancora iniettato o la tab è in uno stato strano
-                if (error.message !== "Could not establish connection. Receiving end does not exist.") {
-                    console.error(`Background: Errore invio SITE_BLACKLISTED a tab attiva ${activeTabId}:`, error);
+                console.log(prefisso + `Invio notifica SITE_BLACKLISTED a tab attiva ${activeTabId}.`);
+                const relatedPort = bridgeContentScriptPortMap.get(activeTabId)
+                if (relatedPort) {
+                    relatedPort.postMessage(blacklistMessageToCS)
+                    console.log(prefisso+"sent blacklistMessageToCS:\n",blacklistMessageToCS)
                 }
+
+            } catch (error: any) {
+                console.error(prefisso + ` Errore invio SITE_BLACKLISTED a tab attiva ${activeTabId}:`, error);
             }
         }
     }
@@ -547,44 +552,18 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
 
     // 2. Invia il messaggio alla PWA
     // Controlla se l'origine della PWA è stata impostata
-    if (pwaOrigin) {
+    if (bridgePWAport) {
         try {
-            // Cerca le tab che corrispondono all'origine della PWA
-            const pwaTabs = await chrome.tabs.query({ url: `${pwaOrigin}/*` });
+            bridgePWAport.postMessage(pwaNotificationMessage)
 
-            if (pwaTabs.length > 0 && pwaTabs[0].id !== undefined) {
-                // Trovata almeno una tab della PWA, invia il messaggio alla prima trovata
-                const pwaTabId = pwaTabs[0].id;
-                console.log(`Background: Trovata tab PWA (ID: ${pwaTabId}, Origine: ${pwaOrigin}), invio messaggio LIMIT_REACHED.`);
-                await chrome.tabs.sendMessage(pwaTabId, pwaNotificationMessage);
-                console.log(`Background: Messaggio LIMIT_REACHED inviato alla tab PWA ${pwaTabId}.`);
-
-            } else {
-                // Nessuna tab PWA trovata con l'origine impostata
-                console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare LIMIT_REACHED.`);
-                // Non facciamo fallback sul broadcast generale per i messaggi PWA,
-                // perché il broadcast andrebbe a *tutte* le tab, inclusi i siti normali.
-                // La PWA deve essere aperta e avere la sua origine settata per ricevere notifiche dirette.
-            }
 
         } catch (error) {
-            console.error(`Background: Errore nell'invio di LIMIT_REACHED alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
+            console.error(prefisso + ` Errore nell'invio di LIMIT_REACHED alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
         }
     } else {
         // L'origine della PWA non è ancora stata impostata.
-        console.warn('Background: Origine PWA non impostata, non posso inviare notifica LIMIT_REACHED.');
+        console.warn(prefisso + ' Origine PWA non impostata, non posso inviare notifica LIMIT_REACHED.');
     }
-
-    // A seconda della regola ('notify & close', 'notify, close & block'),
-    // il content script (della tab attiva) o il background stesso (meno comune)
-    // dovrebbe chiudere la tab o bloccare l'interazione.
-    // L'approccio migliore è che il content script gestisca il blocco/chiusura
-    // in base alla regola ricevuta nel messaggio 'SITE_BLACKLISTED'.
-    // Il background ha già aggiunto il sito alla blacklist globale.
-
-    // Nota: Chiudere una tab dal background usando chrome.tabs.remove(activeTabId)
-    // è un'opzione, ma può essere brusco. Lasciare che il content script
-    // mostri un modal che copre la pagina e/o chiuda la tab offre più flessibilità.
 }
 
 // Funzione per verificare la blacklist e notificare il content script della tab attiva
@@ -594,19 +573,20 @@ async function checkAndNotifyBlacklist() {
         const comparableIdentifier = rule ? rule.site_or_app_name : undefined
         const isBlacklisted = comparableIdentifier ? blacklistedSites.has(comparableIdentifier) : false;
 
-        console.log(`Background: Check blacklist per tab attiva ${activeTabId} (${activeTabUrl}). Blacklisted: ${isBlacklisted}`);
+        console.log(prefisso + `Check blacklist per tab attiva ${activeTabId} (${activeTabUrl}). Blacklisted: ${isBlacklisted}`);
 
         if (activeTabId) { // Assicurati che activeTabId non sia null
             try {
-                await chrome.tabs.sendMessage(activeTabId, {
+                const relatePort = bridgeContentScriptPortMap.get(activeTabId)
+                if (!relatePort) throw new Error("Related port not found for tab id : " + activeTabId)
+                const msgContent = {
                     type: 'IS_BLACKLISTED_RESPONSE', // Messaggio per notificare lo stato blacklist corrente
                     payload: { url: activeTabUrl, isBlacklisted: isBlacklisted, rule: rule }
-                });
-                // console.log(`Background: Messaggio IS_BLACKLISTED_RESPONSE inviato a tab ${activeTabId}`); // Meno log
-            } catch (error: any) {
-                if (error.message !== "Could not establish connection. Receiving end does not exist.") {
-                    console.error(`Background: Errore invio IS_BLACKLISTED_RESPONSE a tab ${activeTabId}:`, error);
                 }
+                relatePort.postMessage(msgContent)
+                console.log("sent msgContent:",msgContent)
+            } catch (error: any) {
+                console.error(prefisso + ` Errore invio IS_BLACKLISTED_RESPONSE a tab ${activeTabId}:`, error);
             }
         }
     }
@@ -640,19 +620,13 @@ async function sendUsageUpdateToPWA() {
     };
 
     try {
-        // Cerca le tab della PWA
-        const pwaTabs = await chrome.tabs.query({ url: `${pwaOrigin}/*` });
+        if (!bridgePWAport) throw new Error("bridge pwa port is null in send usage update to pwa")
+        bridgePWAport.postMessage(pwaNotificationMessage)
 
-        if (pwaTabs.length > 0 && pwaTabs[0].id !== undefined) {
-            const pwaTabId = pwaTabs[0].id;
-            // console.log(`Background: Invio RULES_UPDATED_FROM_EXT alla tab PWA ${pwaTabId}.`); // Log dettagliato se serve
-            await chrome.tabs.sendMessage(pwaTabId, pwaNotificationMessage);
-        } else {
-            console.warn(`Background: Tab PWA con origine ${pwaOrigin} non trovata per inviare RULES_UPDATED_FROM_EXT.`); // Meno log
-        }
+      
 
     } catch (error) {
-        console.error(`Background: Errore nell'invio di RULES_UPDATED_FROM_EXT alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
+        console.error(prefisso + ` Errore nell'invio di RULES_UPDATED_FROM_EXT alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
     }
 }
 
@@ -709,18 +683,11 @@ function getMidnightTimestamp(): number {
 
 // Funzione helper per inviare un messaggio a tutti i content scripts in tab valide
 async function broadcastMessageToAllContentScripts(message: any) {
-    const tabs = await chrome.tabs.query({}); // Ottieni tutte le tab
-    tabs.forEach(tab => {
-        // Invia solo a tab con un URL valido e un ID
-        if (tab.id && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
-            chrome.tabs.sendMessage(tab.id, message).catch(error => {
-                // Ignora errori comuni dovuti a script non iniettato o tab chiusa
-                if (error.message !== "Could not establish connection. Receiving end does not exist.") {
-                    console.error(`Background: Errore invio broadcast a tab ${tab.id}:`, error);
-                }
-            });
-        }
-    });
+    for (let port of bridgeContentScriptPortMap.values()) {
+        port.postMessage(message);
+    }
+
+    
 }
 
 // --- Gestione Chiusura Browser ---

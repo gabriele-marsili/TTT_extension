@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { TimeTrackerRuleObj } from "../types/timeTrackerTypes";
-  import { userDBentry } from "../types/userTypes";
+  import { PWA_URL, THEME_STORAGE_KEY, userDBentry } from "../types/userTypes";
 
   // --- Component State ---
   // 'loading': Show spinner and message
@@ -15,7 +15,9 @@
   // --- Local State ---
   // Theme preference ('light' or 'dark')
   let currentTheme: "light" | "dark" = "light";
-  const THEME_STORAGE_KEY = "ttt-theme-preference"; // Key for Chrome storage
+  const port_PWA_contentScript_bridge = chrome.runtime.connect({
+    name: "TTT_PWA_BRIDGE",
+  });
   const LOGIN_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000;
 
   $: if (typeof document !== "undefined") {
@@ -59,7 +61,8 @@
   function requestTimeTrackerRules() {
     console.log("Popup Svelte: Requesting tracking rules from background.");
     let reqID = "ID:" + Date.now();
-    // Request the current list of rules from the background script
+    
+    // Request the current list of rules from the ext background script
     chrome.runtime.sendMessage(
       { type: "GET_TIME_TRACKER_RULES", requestId: reqID },
       (response) => {
@@ -149,6 +152,7 @@
     checkLoginStatus();
 
     // --- Listener for messages from background script ---
+    
     // This listener handles the signal that the PWA has logged the user in
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.type === "USER_LOGGED_IN_VIA_PWA") {
@@ -184,6 +188,8 @@
         activeTabUrl = "default value";
       }
     });
+
+   
   });
 
   // --- Actions ---
@@ -217,7 +223,7 @@
     console.log("Popup Svelte: Opening PWA in a new tab.");
     // Retrieve PWA origin from storage if available, otherwise use default
     chrome.storage.local.get(["pwaOrigin"], (result) => {
-      const pwaUrl = result.pwaOrigin || "https://localhost:5173/home"; // Fallback
+      const pwaUrl = result.pwaOrigin || PWA_URL + "/home"; // Fallback
       chrome.tabs.create({ url: pwaUrl });
     });
   }

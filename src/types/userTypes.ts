@@ -19,3 +19,6 @@ export type userDBentry = {
     avatarImagePath: string,
     fcmToken: string
 }
+
+export const THEME_STORAGE_KEY = "ttt-theme-preference"; 
+export const PWA_URL = "https://localhost:5173"

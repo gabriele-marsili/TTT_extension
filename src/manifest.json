@@ -29,11 +29,13 @@
         },
         {
             "matches": [
-               "https://localhost:5173/*", 
-               "https://tuo-dominio-pwa.com/*"
+                "https://localhost:5173/*",
+                "https://tuo-dominio-pwa.com/*"
             ],
-            "js": ["src/content-scripts/PWA_content_script.ts"], 
-            "run_at": "document_start" 
+            "js": [
+                "src/content-scripts/PWA_content_script.ts"
+            ],
+            "run_at": "document_idle"
         }
     ],
     "action": {
@@ -44,20 +46,7 @@
             "128": "icons/128x128Logo.png"
         }
     },
-    "web_accessible_resources": [
-        {
-            "resources": [
-                "blocked.html",
-                "injected-ui-bundle.js",
-                "injected-ui-bundle.css",
-                "injected-ui-bundle.js",
-                "assets/injected-ui-bundle.css"
-            ],
-            "matches": [
-                "<all_urls>"
-            ]
-        }
-    ],
+    
     "externally_connectable": {
         "matches": [
             "https://localhost:5173/",

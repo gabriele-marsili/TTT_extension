@@ -1,60 +1,81 @@
+import { mount } from "svelte";
 import { TimeTrackerRuleObj } from "../types/timeTrackerTypes";
+import Blocker from "../injected-ui/Blocker.svelte";
+
+const prefisso = "[PWA content script] "
+let bridgePort_pageContentScript: chrome.runtime.Port | null = null
 
 // --- Stato UI Content Script ---
 let isBlockingUIInjected = false;
-// Potrebbe essere utile memorizzare qui la regola che ha causato il blocco,
-// in caso l'UI debba mostrare dettagli specifici o gestire interazioni.
 let currentBlockingRule: TimeTrackerRuleObj | null = null;
+let currentTheme: 'light' | 'dark' = 'light';
 
 // Sezione per l'iniezione della UI (concept Svelte)
 const BLOCKING_UI_MOUNT_POINT_ID = 'ttt-block-extension-ui';
 let blockingUIMountPoint: HTMLDivElement | null = null;
 
 // Variabile per mantenere l'istanza Svelte montata
-let svelteBlockerInstance: any | null = null; // Usiamo 'any' perché il tipo Blocker non è direttamente disponibile qui
+let svelteBlockerInstance: any | null = null;
 
 // --- Gestione Comunicazione (Background Script) ---
-
-// Listener per messaggi dal background script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log('Content Script: Messaggio ricevuto dal background', request.type, request.payload);
-
-    switch (request.type) {
-        case 'IS_BLACKLISTED_RESPONSE': //responso al messaggio iniziale di check blacklist all'avvio pagina
-            handleBlacklistedSiteStatus(request.payload.isBlacklisted, request.payload.rule);
-            // Non inviare sendResponse, il background non la aspetta più per questo tipo di messaggio
-            break;
-        case 'SITE_BLACKLISTED': // Messaggio quando il limite viene raggiunto *mentre* la pagina è aperta
-            // Questo sito è ora blacklisted. Mostra la UI di blocco.
-            handleBlacklistedSiteStatus(true, request.payload.rule);
-            break;
-        case 'BLACKLIST_RESET': // Messaggio quando la blacklist viene resettata giornalmente
-            handleBlacklistReset();
-            break;
-        case 'USAGE_UPDATE': // Il background invia periodicamente gli aggiornamenti (se PWA è aperta)
-             // Questo messaggio potrebbe non essere strettamente necessario per il content script,
-             // a meno che tu non voglia visualizzare un contatore in tempo reale nella pagina.
-             // Per ora, lo logghiamo ma non facciamo nulla di specifico, perché il tracking è nel background.
-            console.log('Content Script: Ricevuto aggiornamento usage dal background (ignorato per logica UI)');
-            break;
-        default:
-            console.warn('Content Script: Messaggio di tipo sconosciuto ricevuto dal background:', request.type);
-            break;
+function connectBridgePort_pageContentScript() {
+    if (bridgePort_pageContentScript) {
+        console.warn(prefisso + "bridge port already connected")
     }
 
-    // Restituisci true solo se *realmente* usi sendResponse in modo asincrono.
-    // Per i tipi sopra, non stiamo inviando risposte asincrone.
-    // return true; // Rimosso
-});
+    console.log(prefisso + "Tentativo di connessione a bridge port...");
+    bridgePort_pageContentScript = chrome.runtime.connect({ name: 'TTT_CONTENT_SCRIPT_BRIDGE' });
+
+    //ascolta i messaggi dal backrgound dell'estensione
+    bridgePort_pageContentScript.onMessage.addListener((message) => {
+        console.log(prefisso + 'message by backrgound (ext) in CONTENT SCRIPT bridge :', message);
+
+        switch (message.type) {
+            case 'IS_BLACKLISTED_RESPONSE': // responso al messaggio iniziale di check blacklist all'avvio pagina
+                handleBlacklistedSiteStatus(message.payload.isBlacklisted, message.payload.rule);
+                break;
+            case 'SITE_BLACKLISTED': // Messaggio quando il limite viene raggiunto *mentre* la pagina è aperta
+                console.log("blacklisting site ",message.payload.rule.site_or_app_name);
+                currentTheme = message.payload.theme || 'light'; // Aggiorna il tema corrente
+                handleBlacklistedSiteStatus(true, message.payload.rule);
+                break;
+            case 'BLACKLIST_RESET': // Messaggio quando la blacklist viene resettata giornalmente
+                handleBlacklistReset();
+                break;
+            case 'USAGE_UPDATE': // Il background invia periodicamente gli aggiornamenti (se PWA è aperta)
+                console.log('Content Script: Ricevuto aggiornamento usage dal background (ignorato per logica UI)');
+                break;
+            default:
+                console.warn('Content Script: Messaggio di tipo sconosciuto ricevuto dal background:', message.type);
+                break;
+        }
+
+
+        //invio a --> PWA con window.postmessage
+
+
+    });
+
+    bridgePort_pageContentScript.onDisconnect.addListener(() => {
+        console.warn(prefisso + 'Porta al background disconnessa. Tentativo di riconnessione...');
+        bridgePort_pageContentScript = null; // Reset della porta
+        // Implementa un retry con back-off esponenziale qui
+        setTimeout(connectBridgePort_pageContentScript, 1000); // Riprova dopo 1 secondo
+        // Puoi aggiungere un contatore di tentativi e un limite
+    });
+}
+
 
 // Funzione per inviare messaggi al background script
-// (Al momento l'unico messaggio inviato dal content script è REQUEST_BLACKLIST_STATUS)
 function sendMessageToBackground(type: string, payload?: any) {
     try {
-        chrome.runtime.sendMessage({ type, payload });
+        if(!bridgePort_pageContentScript){
+            connectBridgePort_pageContentScript()
+        }
+
+        bridgePort_pageContentScript!.postMessage({type, payload})        
     } catch (error) {
-         // Questo errore può accadere se il background script non è in esecuzione (es. estensione disabilitata/aggiornata)
-        console.error('Content Script: Errore nell\'invio del messaggio al background:', error);
+        console.error(prefisso+'Errore nell\'invio del messaggio al background:', error);
     }
 }
 
@@ -67,18 +88,13 @@ function handleBlacklistedSiteStatus(isBlacklisted: boolean, rule?: TimeTrackerR
     console.log(`Content Script: Stato blacklist per ${currentUrl}: ${isBlacklisted}`, rule);
 
     if (isBlacklisted) {
-        // Il sito è nella blacklist o ha appena raggiunto il limite
         currentBlockingRule = rule || null; // Memorizza la regola, se disponibile
         console.log('Content Script: Sito blacklisted. Iniettando UI di blocco...');
         showBlockingUI(currentUrl, currentBlockingRule);
     } else {
-        // Il sito NON è nella blacklist (o non lo è più)
         console.log('Content Script: Sito non blacklisted (o sbloccato). Rimuovendo UI di blocco...');
         removeBlockingUI();
         currentBlockingRule = null; // Resetta la regola di blocco
-        // Nota: Il monitoraggio del tempo inizia e si ferma nel background script
-        // basato sugli eventi chrome.tabs e sullo stato blacklist.
-        // Il content script non deve avviare/fermare il monitoraggio qui.
     }
 }
 
@@ -87,21 +103,19 @@ function handleBlacklistReset() {
     console.log('Content Script: Ricevuto Blacklist Reset. Rimuovendo UI di blocco se presente.');
     removeBlockingUI();
     currentBlockingRule = null; // Resetta la regola di blocco
-    // Dopo il reset, il background controllerà di nuovo lo stato blacklist
-    // quando la tab attiva cambia o l'URL viene aggiornato.
-    // Potrebbe essere utile fare un nuovo check esplicito qui per sicurezza,
-    // ma gli eventi onActivated/onUpdated dovrebbero coprire la maggior parte dei casi.
-    // Invia una nuova richiesta al background per lo stato attuale
-    requestBlacklistStatus();
+    requestBlacklistStatus(); // Invia una nuova richiesta al background per lo stato attuale
 }
-
 
 // Inietta la UI di blocco nella pagina o la aggiorna
 function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null) {
+    const props: {
+        url: string;
+        rule?: TimeTrackerRuleObj | null;
+    } = { url: url, rule: rule }
+
     // Se l'UI è già iniettata, aggiorna semplicemente i dati nel componente Svelte
-    if (isBlockingUIInjected && svelteBlockerInstance && (window as any).TTTBlockUI && (window as any).TTTBlockUI.update) {
-        console.log('Content Script: UI di blocco già iniettata. Aggiornamento dati...');
-        (window as any).TTTBlockUI.update({ url, rule });
+    if (isBlockingUIInjected && svelteBlockerInstance) {
+        svelteBlockerInstance.$set(props);
         currentBlockingRule = rule; // Assicurati che lo stato interno sia aggiornato
         return;
     }
@@ -114,150 +128,118 @@ function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null) {
 
     blockingUIMountPoint = document.createElement('div');
     blockingUIMountPoint.id = BLOCKING_UI_MOUNT_POINT_ID;
+    // Applica la classe del tema al punto di mount
+    blockingUIMountPoint.classList.add(currentTheme);
 
-    // Stili base per coprire la pagina (assicurati che siano sufficientemente alti come z-index)
-     blockingUIMountPoint.style.cssText = `
+    // Stili base per coprire la pagina (saranno gestiti dal componente Svelte per colori e font)
+    blockingUIMountPoint.style.cssText = `
         position: fixed;
         top: 0;
         left: 0;
         width: 100%;
         height: 100%;
-        background-color: rgba(255, 255, 255, 0.98);
         z-index: 2147483647; /* Massimo z-index possibile */
         display: flex;
         flex-direction: column;
         justify-content: center;
         align-items: center;
-        font-family: sans-serif;
-        color: #333;
         padding: 20px;
         box-sizing: border-box;
         overflow-y: auto;
-     `;
+    `;
 
     document.body.appendChild(blockingUIMountPoint);
     isBlockingUIInjected = true;
     currentBlockingRule = rule; // Imposta la regola associata
 
-    // Inietta lo script compilato del bundle Svelte
-    const scriptUrl = chrome.runtime.getURL('injected-ui-bundle.js'); // Assicurati che il nome file sia corretto
-    const script = document.createElement('script');
-    script.src = scriptUrl;
-    script.type = 'text/javascript'; // Specifica il tipo
+    // Inietta le variabili CSS globali e il font Poppins nell'head della pagina
+    const styleElementId = 'ttt-injected-theme-styles';
+    if (!document.getElementById(styleElementId)) {
+        const style = document.createElement('style');
+        style.id = styleElementId;
+        style.textContent = `
+            /* Global variables from style.css for the theme */
+            :root {
+                --background-light: #fefefed7;
+                --background-dark: #131212;
+                --color-light: black;
+                --color-dark: white;
+                --accent-color-light: #10B981;
+                --accent-color-dark: #34D399;
+                --button-background-light: #ffffff00;
+                --button-background-dark: #131212;
+                --button-border-light: #15b680d4;
+                --button-border-dark: #15b680d4;
+                --shadow-light: 0px 4px 6px rgba(0, 0, 0, 0.352);
+                --shadow-dark: 0px 4px 6px rgba(255, 255, 255, 0.375);
+            }
 
-    // Usa script.onload per sapere quando il bundle è caricato e le funzioni esposte sono disponibili
-    script.onload = () => {
-        // Controlla che il namespace e la funzione di mount siano disponibili
-        if ((window as any).TTTBlockUI && (window as any).TTTBlockUI.mount) {
-            console.log('Content Script: Bundle UI di blocco caricato. Montaggio componente...');
-            // Chiama la funzione di mount esposta dal bundle iniettato
-            svelteBlockerInstance = (window as any).TTTBlockUI.mount(blockingUIMountPoint, { url: window.location.href, rule: currentBlockingRule });
-            console.log('Content Script: Componente Svelte montato.', svelteBlockerInstance);
-        } else {
-            console.error('Content Script: Bundle UI di blocco caricato, ma namespace/funzione di mount non trovati.');
-             // Gestisci l'errore mostrando un messaggio di fallback HTML
-             showFallbackBlockingUI(url, rule);
-        }
-    };
-     script.onerror = (e) => {
-        console.error('Content Script: Errore caricamento bundle UI di blocco:', e);
-        isBlockingUIInjected = false; // Resetta lo stato
-        currentBlockingRule = null;
-        removeBlockingUI(); // Rimuovi il mount point vuoto/errato
-        // Mostra un messaggio di fallback HTML
-        showFallbackBlockingUI(url, rule);
-     };
+            /* Theme application via classes (these will be on the mount point div) */
+            .light {
+                --background: var(--background-light);
+                --color: var(--color-light);
+                --accent-color: var(--accent-color-light);
+                --button-background: var(--button-background-light);
+                --button-border: var(--button-border-light);
+                --shadow: var(--shadow-light);
+                --text-color: black;
+            }
+            .dark {
+                --background: var(--background-dark);
+                --color: var(--color-dark);
+                --accent-color: var(--accent-color-dark);
+                --button-background: var(--button-background-dark);
+                --button-border: var(--button-border-dark);
+                --shadow: var(--shadow-dark);
+                --text-color: white;
+            }
+        `;
+        document.head.appendChild(style);
+    }
 
-    document.head.appendChild(script);
+    // Inietta Google Fonts Poppins
+    const fontLinkElementId = 'ttt-injected-font-link';
+    if (!document.getElementById(fontLinkElementId)) {
+        const fontLink = document.createElement('link');
+        fontLink.id = fontLinkElementId;
+        fontLink.href = 'https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap';
+        fontLink.rel = 'stylesheet';
+        document.head.appendChild(fontLink);
+    }
+
+
+    svelteBlockerInstance = mount(Blocker, { target: blockingUIMountPoint, props: props })
+
 
     // Impedisci lo scroll sulla pagina sottostante
     document.body.style.overflow = 'hidden';
-
-    // Nota: La logica di chiusura tab immediata basata sulla regola
-    // dovrebbe essere gestita dal componente Svelte stesso nel suo handler
-    // del pulsante o in un lifecycle hook se vuoi un countdown automatico.
-}
-
-// Mostra un messaggio di blocco semplice in HTML se il bundle Svelte fallisce
-function showFallbackBlockingUI(url: string, rule: TimeTrackerRuleObj | null) {
-     // Rimuovi UI Svelte errata se presente
-     removeBlockingUI();
-
-     console.log('Content Script: Mostrando fallback UI di blocco...');
-
-    blockingUIMountPoint = document.createElement('div');
-    blockingUIMountPoint.id = BLOCKING_UI_MOUNT_POINT_ID; // Riutilizza lo stesso ID
-
-    // Stili base (simili a showBlockingUI ma senza logica Svelte)
-     blockingUIMountPoint.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(255, 255, 255, 0.98);
-        z-index: 2147483647;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        font-family: sans-serif;
-        color: #333;
-        padding: 20px;
-        box-sizing: border-box;
-        overflow-y: auto;
-     `;
-
-     // Contenuto HTML semplice di fallback
-     blockingUIMountPoint.innerHTML = `
-         <div>
-             <h1>Questo sito è bloccato</h1>
-             <p>Hai superato il tempo limite consentito.</p>
-             ${rule ? `<p>Regola: ${rule.site_or_app_name} (Limite: ${rule.minutesDailyLimit} minuti)</p>` : ''}
-             <p>URL: ${url}</p>
-             <button id="ttt-fallback-gotopwa">Vai a TTT PWA</button>
-         </div>
-     `;
-
-     document.body.appendChild(blockingUIMountPoint);
-     isBlockingUIInjected = true; // Considera anche il fallback iniettato
-
-     // Aggiungi listener al pulsante di fallback
-     const goToPwaButton = blockingUIMountPoint.querySelector('#ttt-fallback-gotopwa');
-     if(goToPwaButton) {
-         goToPwaButton.addEventListener('click', () => {
-              console.log("Fallback UI: Reindirizzamento alla PWA.");
-              if (window != null && window.top != null) {
-                 window.top.location.href = "https://localhost:5173/";
-              }
-         });
-     }
-
-     // Impedisci lo scroll
-     document.body.style.overflow = 'hidden';
 }
 
 // Rimuove la UI di blocco dalla pagina
 function removeBlockingUI() {
     // Se è stata iniettata la UI Svelte e abbiamo l'istanza, smontala
-    if (isBlockingUIInjected && svelteBlockerInstance && (window as any).TTTBlockUI && (window as any).TTTBlockUI.unmount) {
+    if (isBlockingUIInjected && svelteBlockerInstance) {
         console.log('Content Script: Smontaggio componente Svelte...');
-        (window as any).TTTBlockUI.unmount();
+        svelteBlockerInstance.$destroy();
         svelteBlockerInstance = null; // Resetta l'istanza
     }
 
-    // Rimuovi il mount point dal DOM (questo rimuove sia l'UI Svelte che il fallback HTML)
+    // Rimuovi il mount point dal DOM
     if (blockingUIMountPoint) {
         console.log('Content Script: Rimozione mount point UI di blocco...');
         blockingUIMountPoint.remove();
         blockingUIMountPoint = null;
     }
 
-    // Rimuovi lo script iniettato del bundle se presente e necessario (spesso non è strettamente necessario rimuoverlo)
-    // const script = document.head.querySelector(`script[src="${chrome.runtime.getURL('injected-ui-bundle.js')}"]`);
-    // if (script) {
-    //     script.remove();
-    // }
+    // Rimuovi il tag <style> e <link> del font iniettati
+    const styleElement = document.getElementById('ttt-injected-theme-styles');
+    if (styleElement) {
+        styleElement.remove();
+    }
+    const fontLink = document.getElementById('ttt-injected-font-link');
+    if (fontLink) {
+        fontLink.remove();
+    }
 
     // Resetta lo stato interno
     isBlockingUIInjected = false;
@@ -280,11 +262,6 @@ function requestBlacklistStatus() {
 
 // Esegui la richiesta iniziale al background script al caricamento del content script
 // Assicurati che il DOM sia pronto se la UI di blocco deve essere iniettata immediatamente.
-// 'loading' significa che il documento sta ancora caricando.
-// 'interactive' significa che il documento è stato completamente caricato e analizzato,
-// ma le sub-risorse (immagini, script secondari) potrebbero essere ancora in fase di caricamento.
-// 'complete' significa che la pagina è completamente caricata, incluse tutte le risorse.
-// Per iniettare UI che copre tutto, 'interactive' o 'complete' sono solitamente sicuri.
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', requestBlacklistStatus);
 } else {

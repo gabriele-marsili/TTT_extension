@@ -1,8 +1,4 @@
-// src/popup/popup.ts
-import App from './Popup.svelte'; // Importa il componente Svelte principale
-
-// Importa il tipo TimeTrackerRuleObj
-import { mount, SvelteComponent } from 'svelte';
+import { mount } from 'svelte';
 import Popup from './Popup.svelte';
 import { TimeTrackerRuleObj } from '../types/timeTrackerTypes';
 
