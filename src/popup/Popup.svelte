@@ -9,15 +9,14 @@
   let currentState: "loading" | "ready" = "loading";
 
   let activeTabUrl: string | undefined = undefined;
+  let errorLogText = ""
   // timeTrackerRules is initially an empty array, updated in onMount here or via background messages.
   export let timeTrackerRules: TimeTrackerRuleObj[] = [];
 
   // --- Local State ---
   // Theme preference ('light' or 'dark')
   let currentTheme: "light" | "dark" = "light";
-  const port_PWA_contentScript_bridge = chrome.runtime.connect({
-    name: "TTT_PWA_BRIDGE",
-  });
+  
   const LOGIN_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000;
 
   $: if (typeof document !== "undefined") {
@@ -33,7 +32,7 @@
         const lastUserInfoUpdateTimestamp: number | undefined =
           result.lastUserInfoUpdateTimestamp;
         const now = Date.now();
-
+        if(lastUserInfoUpdateTimestamp) console.log("now - lastUserInfoUpdateTimestamp = ",(now - lastUserInfoUpdateTimestamp)," < LOGIN_VALIDITY_DURATION_MS ? ",LOGIN_VALIDITY_DURATION_MS," : ",now - lastUserInfoUpdateTimestamp < LOGIN_VALIDITY_DURATION_MS)
         if (
           userInfo &&
           lastUserInfoUpdateTimestamp &&
@@ -176,6 +175,12 @@
 
         timeTrackerRules = data.timeTrackerRules;
       }
+
+      if(request.type === "ERROR_LOG" && request.errorMessage != undefined){
+        errorLogText = request.errorMessage;
+        console.log("[Popup Svlete] error log : "+errorLogText)
+        setTimeout(()=>{errorLogText = ""},5000) //delete error message after 5s
+      }
     });
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -269,6 +274,10 @@
         {/if}
       </strong>
     </div>
+
+    {#if errorLogText != ""}
+      <h4 class="errorText">{errorLogText}</h4>
+    {/if}
 
     <h4>Monitored Sites:</h4>
     {#if timeTrackerRules.length > 0}
@@ -655,8 +664,9 @@
   }
 
   /* Stile quando il tempo è scaduto */
-  .time-remaining.expired {
-    color: red; /* Colore fisso rosso (o variabile tema se hai) */
+  .time-remaining.expired,
+  .state-ready .errorText {
+    color: red; /* Colore fisso rosso (o variabile tema se hai) */    
   }
 
   /* Stile per l'azione (Block/Warn) */

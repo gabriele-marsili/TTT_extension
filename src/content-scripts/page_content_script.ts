@@ -35,7 +35,7 @@ function connectBridgePort_pageContentScript() {
                 handleBlacklistedSiteStatus(message.payload.isBlacklisted, message.payload.rule);
                 break;
             case 'SITE_BLACKLISTED': // Messaggio quando il limite viene raggiunto *mentre* la pagina è aperta
-                console.log("blacklisting site ",message.payload.rule.site_or_app_name);
+                console.log("blacklisting site ", message.payload.rule.site_or_app_name);
                 currentTheme = message.payload.theme || 'light'; // Aggiorna il tema corrente
                 handleBlacklistedSiteStatus(true, message.payload.rule);
                 break;
@@ -69,13 +69,13 @@ function connectBridgePort_pageContentScript() {
 // Funzione per inviare messaggi al background script
 function sendMessageToBackground(type: string, payload?: any) {
     try {
-        if(!bridgePort_pageContentScript){
+        if (!bridgePort_pageContentScript) {
             connectBridgePort_pageContentScript()
         }
 
-        bridgePort_pageContentScript!.postMessage({type, payload})        
+        bridgePort_pageContentScript!.postMessage({ type, payload })
     } catch (error) {
-        console.error(prefisso+'Errore nell\'invio del messaggio al background:', error);
+        console.error(prefisso + 'Errore nell\'invio del messaggio al background:', error);
     }
 }
 
@@ -83,14 +83,16 @@ function sendMessageToBackground(type: string, payload?: any) {
 // --- Logica UI di Blocco ---
 
 // Gestisce lo stato di blacklist del sito corrente
-function handleBlacklistedSiteStatus(isBlacklisted: boolean, rule?: TimeTrackerRuleObj) {
+function handleBlacklistedSiteStatus(isBlacklisted: boolean, rule: TimeTrackerRuleObj) {
     const currentUrl = window.location.href;
     console.log(`Content Script: Stato blacklist per ${currentUrl}: ${isBlacklisted}`, rule);
 
     if (isBlacklisted) {
-        currentBlockingRule = rule || null; // Memorizza la regola, se disponibile
-        console.log('Content Script: Sito blacklisted. Iniettando UI di blocco...');
-        showBlockingUI(currentUrl, currentBlockingRule);
+        currentBlockingRule = rule;
+        if (rule.rule = "notify, close & block") {
+            console.log('Content Script: Sito blacklisted. Iniettando UI di blocco...');
+            showBlockingUI(currentUrl, currentBlockingRule);
+        }
     } else {
         console.log('Content Script: Sito non blacklisted (o sbloccato). Rimuovendo UI di blocco...');
         removeBlockingUI();

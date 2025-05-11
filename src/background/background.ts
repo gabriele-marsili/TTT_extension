@@ -121,6 +121,18 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
 
 }
 
+function sendErrorLogToExtUI(errorMessage: string) {
+    const errMsg = {
+        type: "ERROR_LOG",
+        errorMessage
+    }
+    chrome.runtime.sendMessage(errMsg, (response) => {
+        if (chrome.runtime.lastError) {
+            console.warn(prefisso + ' Error sending ERROR_LOG to popup:', chrome.runtime.lastError.message);
+        }
+    });
+}
+
 /**
  * send ask rules from ext request to pwa content script that will bridge it to PWA
  * @returns void
@@ -128,6 +140,8 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
 function askRulesToPWA() {
     if (!bridgePWAport) {
         console.error(prefisso + "bridgePWAport is null in ask rules to pwa")
+        sendErrorLogToExtUI("Open PWA to update and syncronize rules")
+        return;
     }
 
     bridgePWAport!.postMessage({ type: "ASK_RULES_FROM_EXT" })
@@ -137,72 +151,76 @@ function askRulesToPWA() {
 
 //litener for PWA bridge port && content script bridge port 
 chrome.runtime.onConnect.addListener(port => {
-    console.log(prefisso + `Connessione in arrivo. Nome porta: "${port.name}".`);
-
     // Ottieni l'ID della tab da cui proviene la connessione
     const tabId = port.sender?.tab?.id;
 
+    console.log(prefisso + `Connessione in arrivo. Nome porta: "${port.name}" | tab id : ${tabId}`);
+
     // Controlla il nome della porta per determinare il tipo di connessione
-    if (port.name === 'TTT_PWA_BRIDGE') { //messages from pwa content script (inoltrati da PWA)        
-        bridgePWAport = port;
-        console.log(prefisso + `Porta PWA_BRIDGE aperta per Tab ID: ${tabId}.`);
-
-        port.onMessage.addListener(async request => {
-            console.log(prefisso + `(PWA Port ${tabId}): Ricevuto`, request.type, request.payload);
-            switch (request.type) {
-                case 'PWA_READY':
-                    // Il content script PWA è pronto
-                    if (port.sender?.origin) {
-                        pwaOrigin = port.sender.origin; // Salva l'origine della PWA
-                        await chrome.storage.local.set({ pwaOrigin });
-                        console.log('Background: PWA Origin set to:', pwaOrigin);
-                    }
-
-                    if (request.payload) {
-                        userInfo = request.payload as userDBentry;
-                        await chrome.storage.local.set({ userInfo, lastUserInfoUpdateTimestamp: Date.now() });
-                        // notifica popup
-                        // send message to popup svelte to notify the user login
-                        chrome.runtime.sendMessage({ type: 'USER_LOGGED_IN_VIA_PWA' }, (response) => {
-                            if (chrome.runtime.lastError) {
-                                // L'errore è normale se il popup non è aperto in quel momento
-                                console.warn(prefisso + ' Error sending USER_LOGGED_IN_VIA_PWA to popup:', chrome.runtime.lastError.message);
-                            }
-                        });
-                    }
-
-                    break;
-                case 'UPDATE_TIME_TRACKER_RULES':
-                    // La PWA sta inviando un aggiornamento delle regole
-                    if (Array.isArray(request.payload.rules)) {
-                        // Qui aggiorni il tuo stato globale `timeTrackerRules` nel background
-                        // e poi chiami la tua funzione `updateRules`
-                        updateRules(request.payload.rules);
-                    } else {
-                        console.error(prefisso + "Invalid payload in update time tracker rules")
-                    }
-                    break;
-                case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
-                    console.log('Background: Ricevuta richiesta regole da PWA.');
-                    const msgContent = {
-                        type: "REQUEST_TIME_TRACKER_RULES_RESPONSE",
-                        payload: timeTrackerRules,
-                        requestId: request.requestId
-                    }
-                    port.postMessage(msgContent); // Invia le regole correnti al PWA content script (bridge) che le inoltra alla PWA
-
-                    break;
-                default:
-                    console.warn(prefisso + ` (PWA Port ${tabId}): Tipo di messaggio sconosciuto:`, request.type);
+    if (tabId) {
+        if (port.name === 'TTT_PWA_BRIDGE') { //messages from pwa content script (inoltrati da PWA)        
+            if (!bridgePWAport) {
+                bridgePWAport = port;
             }
-        });
 
-        port.onDisconnect.addListener(() => {
-            console.log(prefisso + `Porta PWA_BRIDGE chiusa per Tab ID: ${tabId}.`);            
-        });
+            console.log(prefisso + `Porta PWA_BRIDGE aperta per Tab ID: ${tabId}.`);
 
-    } else if (port.name === 'TTT_CONTENT_SCRIPT_BRIDGE') {//messages from content script        
-        if (tabId !== undefined) {
+            port.onMessage.addListener(async request => {
+                console.log(prefisso + `(PWA Port ${tabId}): Ricevuto`, request.type, request.payload);
+                switch (request.type) {
+                    case 'PWA_READY':
+                        // Il content script PWA è pronto
+                        if (port.sender?.origin) {
+                            pwaOrigin = port.sender.origin; // Salva l'origine della PWA
+                            await chrome.storage.local.set({ pwaOrigin });
+                            console.log('Background: PWA Origin set to:', pwaOrigin);
+                        }
+
+                        if (request.payload) {
+                            userInfo = request.payload as userDBentry;
+                            await chrome.storage.local.set({ userInfo, lastUserInfoUpdateTimestamp: Date.now() });
+                            // notifica popup
+                            // send message to popup svelte to notify the user login
+                            chrome.runtime.sendMessage({ type: 'USER_LOGGED_IN_VIA_PWA' }, (response) => {
+                                if (chrome.runtime.lastError) {
+                                    // L'errore è normale se il popup non è aperto in quel momento
+                                    console.warn(prefisso + ' Error sending USER_LOGGED_IN_VIA_PWA to popup:', chrome.runtime.lastError.message);
+                                }
+                            });
+                        }
+
+                        break;
+                    case 'UPDATE_TIME_TRACKER_RULES':
+                        // La PWA sta inviando un aggiornamento delle regole
+                        if (Array.isArray(request.payload.rules)) {
+                            // Qui aggiorni il tuo stato globale `timeTrackerRules` nel background
+                            // e poi chiami la tua funzione `updateRules`
+                            updateRules(request.payload.rules);
+                        } else {
+                            console.error(prefisso + "Invalid payload in update time tracker rules")
+                        }
+                        break;
+                    case 'REQUEST_TIME_TRACKER_RULES': // La PWA richiede le regole attuali dall'estensione
+                        console.log('Background: Ricevuta richiesta regole da PWA.');
+                        const msgContent = {
+                            type: "REQUEST_TIME_TRACKER_RULES_RESPONSE",
+                            payload: timeTrackerRules,
+                            requestId: request.requestId
+                        }
+                        port.postMessage(msgContent); // Invia le regole correnti al PWA content script (bridge) che le inoltra alla PWA
+
+                        break;
+                    default:
+                        console.warn(prefisso + ` (PWA Port ${tabId}): Tipo di messaggio sconosciuto:`, request.type);
+                }
+            });
+
+            port.onDisconnect.addListener(() => {
+                console.log(prefisso + `Porta PWA_BRIDGE chiusa per Tab ID: ${tabId}.`);
+            });
+
+        } else if (port.name === 'TTT_CONTENT_SCRIPT_BRIDGE') {//messages from content script        
+
             bridgeContentScriptPortMap.set(tabId, port); // Memorizza la porta
             console.log(prefisso + `Porta NORMAL_PAGE_BRIDGE aperta per Tab ID: ${tabId}.`);
 
@@ -215,7 +233,7 @@ chrome.runtime.onConnect.addListener(port => {
                         const comparableRuleNormal = getComparableSiteIdentifier(urlToCheckNormal);
                         let isBlacklistedNormal = comparableRuleNormal ? blacklistedSites.has(comparableRuleNormal.site_or_app_name) : false;
 
-                        if(comparableRuleNormal && comparableRuleNormal.remainingTimeMin > 0){
+                        if (comparableRuleNormal && comparableRuleNormal.remainingTimeMin > 0) {
                             isBlacklistedNormal = false;
                             blacklistedSites.delete(comparableRuleNormal.site_or_app_name)
                             await saveStateImmediate()
@@ -232,16 +250,18 @@ chrome.runtime.onConnect.addListener(port => {
             });
 
             port.onDisconnect.addListener(() => {
-                console.log(prefisso + `Porta NORMAL_PAGE_BRIDGE chiusa per Tab ID: ${tabId}.`);                
+                console.log(prefisso + `Porta NORMAL_PAGE_BRIDGE chiusa per Tab ID: ${tabId}.`);
             });
+
         } else {
-            console.warn(prefisso + "Connessione NORMAL_PAGE_BRIDGE senza un Tab ID valido.");
-            port.disconnect();
+            console.warn(prefisso + `Connessione con nome sconosciuto ricevuta: "${port.name}". Disconnessione.`);
+            port.disconnect(); // Disconnetti la porta sconosciuta per sicurezza
         }
     } else {
-        console.warn(prefisso + `Connessione con nome sconosciuto ricevuta: "${port.name}". Disconnessione.`);
-        port.disconnect(); // Disconnetti la porta sconosciuta per sicurezza
+        console.warn(prefisso + "Connessione porta " + port.name + " senza un Tab ID valido.");
+        port.disconnect();
     }
+
 });
 
 // --- Gestione Comunicazione (POPUP.svelte -> backrgound) ---
@@ -519,7 +539,7 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
     // Messaggio per i content script
     const blacklistMessageToCS = {
         type: 'SITE_BLACKLISTED', // Nuovo tipo di messaggio per notificare la blacklist in tempo reale
-        payload: { siteIdentifier: rule.site_or_app_name, rule: rule, isBlacklisted : true}
+        payload: { siteIdentifier: rule.site_or_app_name, rule: rule, isBlacklisted: true }
     };
 
     // Messaggio per la PWA
@@ -540,12 +560,24 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
                 const relatedPort = bridgeContentScriptPortMap.get(activeTabId)
                 if (relatedPort) {
                     relatedPort.postMessage(blacklistMessageToCS)
-                    console.log(prefisso+"sent blacklistMessageToCS:\n",blacklistMessageToCS)
+                    console.log(prefisso + "sent blacklistMessageToCS:\n", blacklistMessageToCS)
                 }
 
             } catch (error: any) {
                 console.error(prefisso + ` Errore invio SITE_BLACKLISTED a tab attiva ${activeTabId}:`, error);
             }
+        }
+
+        if (rule.rule.includes("close")) { //close page after 1s
+            setTimeout(async () => {
+                if (activeTabId) {
+                    try {
+                        await chrome.tabs.remove(activeTabId)
+                    } catch (error) {
+                        console.error(prefisso+"Error in close page:\n",error);
+                    }
+                }
+            }, 1000)
         }
     }
 
@@ -555,8 +587,7 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
     if (bridgePWAport) {
         try {
             bridgePWAport.postMessage(pwaNotificationMessage)
-
-
+            console.log("LIMIT_REACHED message sent")
         } catch (error) {
             console.error(prefisso + ` Errore nell'invio di LIMIT_REACHED alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
         }
@@ -584,7 +615,7 @@ async function checkAndNotifyBlacklist() {
                     payload: { url: activeTabUrl, isBlacklisted: isBlacklisted, rule: rule }
                 }
                 relatePort.postMessage(msgContent)
-                console.log("sent msgContent:",msgContent)
+                console.log("sent msgContent:", msgContent)
             } catch (error: any) {
                 console.error(prefisso + ` Errore invio IS_BLACKLISTED_RESPONSE a tab ${activeTabId}:`, error);
             }
@@ -623,7 +654,7 @@ async function sendUsageUpdateToPWA() {
         if (!bridgePWAport) throw new Error("bridge pwa port is null in send usage update to pwa")
         bridgePWAport.postMessage(pwaNotificationMessage)
 
-      
+
 
     } catch (error) {
         console.error(prefisso + ` Errore nell'invio di RULES_UPDATED_FROM_EXT alla tab PWA con origine ${pwaOrigin} o durante la query:`, error);
@@ -687,7 +718,7 @@ async function broadcastMessageToAllContentScripts(message: any) {
         port.postMessage(message);
     }
 
-    
+
 }
 
 // --- Gestione Chiusura Browser ---
