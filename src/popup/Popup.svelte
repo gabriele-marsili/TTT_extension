@@ -9,14 +9,15 @@
   let currentState: "loading" | "ready" = "loading";
 
   let activeTabUrl: string | undefined = undefined;
-  let errorLogText = ""
+  let errorLogText = "";
   // timeTrackerRules is initially an empty array, updated in onMount here or via background messages.
   export let timeTrackerRules: TimeTrackerRuleObj[] = [];
 
   // --- Local State ---
   // Theme preference ('light' or 'dark')
   let currentTheme: "light" | "dark" = "light";
-  
+  let waitingText =
+    "Please log in to the Time Tracker PWA to sync your rules and status.";
   const LOGIN_VALIDITY_DURATION_MS = 24 * 60 * 60 * 1000;
 
   $: if (typeof document !== "undefined") {
@@ -32,25 +33,42 @@
         const lastUserInfoUpdateTimestamp: number | undefined =
           result.lastUserInfoUpdateTimestamp;
         const now = Date.now();
-        if(lastUserInfoUpdateTimestamp) console.log("now - lastUserInfoUpdateTimestamp = ",(now - lastUserInfoUpdateTimestamp)," < LOGIN_VALIDITY_DURATION_MS ? ",LOGIN_VALIDITY_DURATION_MS," : ",now - lastUserInfoUpdateTimestamp < LOGIN_VALIDITY_DURATION_MS)
+        if (lastUserInfoUpdateTimestamp)
+          console.log(
+            "now - lastUserInfoUpdateTimestamp = ",
+            now - lastUserInfoUpdateTimestamp,
+            " < LOGIN_VALIDITY_DURATION_MS ? ",
+            LOGIN_VALIDITY_DURATION_MS,
+            " : ",
+            now - lastUserInfoUpdateTimestamp < LOGIN_VALIDITY_DURATION_MS,
+          );
         if (
           userInfo &&
           lastUserInfoUpdateTimestamp &&
           now - lastUserInfoUpdateTimestamp < LOGIN_VALIDITY_DURATION_MS
         ) {
-          // User is logged in and login is recent (within 24h)
-          console.log(
-            "Popup Svelte: User logged in recently. Transitioning to ready state.",
-          );
-          currentState = "ready";
-          // Immediately request rules since we know the user is ready
-          requestTimeTrackerRules();
+          console.log("userInfo.timeTrackerActive : ",userInfo.timeTrackerActive)
+          if (userInfo.timeTrackerActive) {
+            // User is logged in and login is recent (within 24h)
+            console.log(
+              "Popup Svelte: User logged in recently. Transitioning to ready state.",
+            );
+            currentState = "ready";
+            // Immediately request rules since we know the user is ready
+            requestTimeTrackerRules();
+          } else {
+            currentState = "loading";
+            waitingText = "Time Tracker Mode disabled, activate it via TTT app"
+          }
+
         } else {
           // User not logged in or login expired
           console.log(
             "Popup Svelte: User not logged in or login expired. Showing loading/wait state.",
           );
           currentState = "loading";
+          waitingText =
+            "Please log in to the Time Tracker PWA to sync your rules and status.";
           // Stay in loading state, waiting for the PWA_READY signal via background script
         }
       },
@@ -60,7 +78,7 @@
   function requestTimeTrackerRules() {
     console.log("Popup Svelte: Requesting tracking rules from background.");
     let reqID = "ID:" + Date.now();
-    
+
     // Request the current list of rules from the ext background script
     chrome.runtime.sendMessage(
       { type: "GET_TIME_TRACKER_RULES", requestId: reqID },
@@ -151,7 +169,7 @@
     checkLoginStatus();
 
     // --- Listener for messages from background script ---
-    
+
     // This listener handles the signal that the PWA has logged the user in
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.type === "USER_LOGGED_IN_VIA_PWA") {
@@ -176,10 +194,12 @@
         timeTrackerRules = data.timeTrackerRules;
       }
 
-      if(request.type === "ERROR_LOG" && request.errorMessage != undefined){
+      if (request.type === "ERROR_LOG" && request.errorMessage != undefined) {
         errorLogText = request.errorMessage;
-        console.log("[Popup Svlete] error log : "+errorLogText)
-        setTimeout(()=>{errorLogText = ""},5000) //delete error message after 5s
+        console.log("[Popup Svlete] error log : " + errorLogText);
+        setTimeout(() => {
+          errorLogText = "";
+        }, 5000); //delete error message after 5s
       }
     });
 
@@ -193,8 +213,6 @@
         activeTabUrl = "default value";
       }
     });
-
-   
   });
 
   // --- Actions ---
@@ -243,7 +261,7 @@
       <div class="spinner"></div>
       <h3>Waiting for PWA...</h3>
       <p>
-        Please log in to the Time Tracker PWA to sync your rules and status.
+        {waitingText}
       </p>
       <div class="button-container">
         <button on:click={goToPwa}>Go to TTT PWA</button>
@@ -666,7 +684,7 @@
   /* Stile quando il tempo è scaduto */
   .time-remaining.expired,
   .state-ready .errorText {
-    color: red; /* Colore fisso rosso (o variabile tema se hai) */    
+    color: red; /* Colore fisso rosso (o variabile tema se hai) */
   }
 
   /* Stile per l'azione (Block/Warn) */

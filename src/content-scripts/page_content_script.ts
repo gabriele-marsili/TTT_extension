@@ -32,12 +32,12 @@ function connectBridgePort_pageContentScript() {
 
         switch (message.type) {
             case 'IS_BLACKLISTED_RESPONSE': // responso al messaggio iniziale di check blacklist all'avvio pagina
-                handleBlacklistedSiteStatus(message.payload.isBlacklisted, message.payload.rule);
+                handleBlacklistedSiteStatus(message.payload.isBlacklisted, message.payload.rule, message.payload.isTimeTrackerActive);
                 break;
             case 'SITE_BLACKLISTED': // Messaggio quando il limite viene raggiunto *mentre* la pagina è aperta
                 console.log("blacklisting site ", message.payload.rule.site_or_app_name);
                 currentTheme = message.payload.theme || 'light'; // Aggiorna il tema corrente
-                handleBlacklistedSiteStatus(true, message.payload.rule);
+                handleBlacklistedSiteStatus(true, message.payload.rule, message.payload.isTimeTrackerActive);
                 break;
             case 'BLACKLIST_RESET': // Messaggio quando la blacklist viene resettata giornalmente
                 handleBlacklistReset();
@@ -83,7 +83,7 @@ function sendMessageToBackground(type: string, payload?: any) {
 // --- Logica UI di Blocco ---
 
 // Gestisce lo stato di blacklist del sito corrente
-function handleBlacklistedSiteStatus(isBlacklisted: boolean, rule: TimeTrackerRuleObj) {
+function handleBlacklistedSiteStatus(isBlacklisted: boolean, rule: TimeTrackerRuleObj,isTimeTrackerActive:boolean) {
     const currentUrl = window.location.href;
     console.log(`Content Script: Stato blacklist per ${currentUrl}: ${isBlacklisted}`, rule);
 
@@ -91,7 +91,7 @@ function handleBlacklistedSiteStatus(isBlacklisted: boolean, rule: TimeTrackerRu
         currentBlockingRule = rule;
         if (rule.rule = "notify, close & block") {
             console.log('Content Script: Sito blacklisted. Iniettando UI di blocco...');
-            showBlockingUI(currentUrl, currentBlockingRule);
+            showBlockingUI(currentUrl, currentBlockingRule,isTimeTrackerActive);
         }
     } else {
         console.log('Content Script: Sito non blacklisted (o sbloccato). Rimuovendo UI di blocco...');
@@ -109,7 +109,10 @@ function handleBlacklistReset() {
 }
 
 // Inietta la UI di blocco nella pagina o la aggiorna
-function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null) {
+function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null, isTimeTrackerActive:boolean) {
+    
+    if(!isTimeTrackerActive) return;
+    
     const props: {
         url: string;
         rule?: TimeTrackerRuleObj | null;

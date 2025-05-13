@@ -238,9 +238,12 @@ chrome.runtime.onConnect.addListener(port => {
                             blacklistedSites.delete(comparableRuleNormal.site_or_app_name)
                             await saveStateImmediate()
                         }
+                        await loadState() //=>update user info
+                        let isTimeTrackerActive = userInfo ? userInfo.timeTrackerActive : false
+
                         port.postMessage({
                             type: 'IS_BLACKLISTED_RESPONSE',
-                            payload: { url: urlToCheckNormal, isBlacklisted: isBlacklistedNormal, rule: comparableRuleNormal },
+                            payload: { url: urlToCheckNormal, isBlacklisted: isBlacklistedNormal, rule: comparableRuleNormal, isTimeTrackerActive: isTimeTrackerActive },
                             requestId: request.requestId
                         });
                         break;
@@ -367,6 +370,10 @@ async function trackTime() {
         console.log('Background: Nessuna tab attiva con URL valido da tracciare.'); // Meno log se è normale
         return; // Non c'è nulla da tracciare
     }
+
+    //check se time tracker mode è attiva :
+    await loadState()//=>update user info
+    if (userInfo && !userInfo.timeTrackerActive) return;
 
     // Trova la regola che corrisponde all'URL della tab attiva
     const matchingRule = findMatchingRule(activeTabUrl);
@@ -536,10 +543,15 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
     // Notifica i content script (specialmente quello della tab attiva) che il sito è blacklisted
     // e la PWA che il limite è stato raggiunto.
 
+
+    await loadState() //=>update user info
+    let isTimeTrackerActive = userInfo ? userInfo.timeTrackerActive : false
+
+
     // Messaggio per i content script
     const blacklistMessageToCS = {
         type: 'SITE_BLACKLISTED', // Nuovo tipo di messaggio per notificare la blacklist in tempo reale
-        payload: { siteIdentifier: rule.site_or_app_name, rule: rule, isBlacklisted: true }
+        payload: { siteIdentifier: rule.site_or_app_name, rule: rule, isBlacklisted: true, isTimeTrackerActive:isTimeTrackerActive }
     };
 
     // Messaggio per la PWA
@@ -574,7 +586,7 @@ async function handleLimitReached(rule: TimeTrackerRuleObj) {
                     try {
                         await chrome.tabs.remove(activeTabId)
                     } catch (error) {
-                        console.error(prefisso+"Error in close page:\n",error);
+                        console.error(prefisso + "Error in close page:\n", error);
                     }
                 }
             }, 1000)
@@ -606,13 +618,19 @@ async function checkAndNotifyBlacklist() {
 
         console.log(prefisso + `Check blacklist per tab attiva ${activeTabId} (${activeTabUrl}). Blacklisted: ${isBlacklisted}`);
 
+
+
         if (activeTabId) { // Assicurati che activeTabId non sia null
             try {
                 const relatePort = bridgeContentScriptPortMap.get(activeTabId)
                 if (!relatePort) throw new Error("Related port not found for tab id : " + activeTabId)
+
+                await loadState() //=>update user info
+                let isTimeTrackerActive = userInfo ? userInfo.timeTrackerActive : false
+
                 const msgContent = {
                     type: 'IS_BLACKLISTED_RESPONSE', // Messaggio per notificare lo stato blacklist corrente
-                    payload: { url: activeTabUrl, isBlacklisted: isBlacklisted, rule: rule }
+                    payload: { url: activeTabUrl, isBlacklisted: isBlacklisted, rule: rule, isTimeTrackerActive: isTimeTrackerActive }
                 }
                 relatePort.postMessage(msgContent)
                 console.log("sent msgContent:", msgContent)
