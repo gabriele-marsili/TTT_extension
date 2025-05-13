@@ -58,10 +58,8 @@ function connectBridgePort_pageContentScript() {
 
     bridgePort_pageContentScript.onDisconnect.addListener(() => {
         console.warn(prefisso + 'Porta al background disconnessa. Tentativo di riconnessione...');
-        bridgePort_pageContentScript = null; // Reset della porta
-        // Implementa un retry con back-off esponenziale qui
+        bridgePort_pageContentScript = null;
         setTimeout(connectBridgePort_pageContentScript, 1000); // Riprova dopo 1 secondo
-        // Puoi aggiungere un contatore di tentativi e un limite
     });
 }
 
@@ -118,25 +116,22 @@ function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null, isTimeTrac
         rule?: TimeTrackerRuleObj | null;
     } = { url: url, rule: rule }
 
-    // Se l'UI è già iniettata, aggiorna semplicemente i dati nel componente Svelte
     if (isBlockingUIInjected && svelteBlockerInstance) {
         svelteBlockerInstance.$set(props);
-        currentBlockingRule = rule; // Assicurati che lo stato interno sia aggiornato
+        currentBlockingRule = rule; 
         return;
     }
 
-    // Se non è iniettata, procedi con l'iniezione
     console.log('Content Script: Iniezione nuova UI di blocco...');
 
     // Rimuovi qualsiasi istanza precedente o mount point in caso di stato inconsistente
-    removeBlockingUI(); // Pulizia preventiva
+    removeBlockingUI(); 
 
     blockingUIMountPoint = document.createElement('div');
-    blockingUIMountPoint.id = BLOCKING_UI_MOUNT_POINT_ID;
-    // Applica la classe del tema al punto di mount
+    blockingUIMountPoint.id = BLOCKING_UI_MOUNT_POINT_ID;    
     blockingUIMountPoint.classList.add(currentTheme);
 
-    // Stili base per coprire la pagina (saranno gestiti dal componente Svelte per colori e font)
+    // Stili base per coprire la pagina (saranno gestiti dal Blocker.svelte)
     blockingUIMountPoint.style.cssText = `
         position: fixed;
         top: 0;
@@ -163,7 +158,7 @@ function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null, isTimeTrac
         const style = document.createElement('style');
         style.id = styleElementId;
         style.textContent = `
-            /* Global variables from style.css for the theme */
+            
             :root {
                 --background-light: #fefefed7;
                 --background-dark: #131212;
@@ -179,7 +174,7 @@ function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null, isTimeTrac
                 --shadow-dark: 0px 4px 6px rgba(255, 255, 255, 0.375);
             }
 
-            /* Theme application via classes (these will be on the mount point div) */
+            
             .light {
                 --background: var(--background-light);
                 --color: var(--color-light);
@@ -222,21 +217,20 @@ function showBlockingUI(url: string, rule: TimeTrackerRuleObj | null, isTimeTrac
 
 // Rimuove la UI di blocco dalla pagina
 function removeBlockingUI() {
-    // Se è stata iniettata la UI Svelte e abbiamo l'istanza, smontala
     if (isBlockingUIInjected && svelteBlockerInstance) {
         console.log('Content Script: Smontaggio componente Svelte...');
         svelteBlockerInstance.$destroy();
         svelteBlockerInstance = null; // Resetta l'istanza
     }
 
-    // Rimuovi il mount point dal DOM
+    // Rimuove il mount point dal DOM
     if (blockingUIMountPoint) {
         console.log('Content Script: Rimozione mount point UI di blocco...');
         blockingUIMountPoint.remove();
         blockingUIMountPoint = null;
     }
 
-    // Rimuovi il tag <style> e <link> del font iniettati
+    // Rimuove il tag <style> e <link> del font iniettati
     const styleElement = document.getElementById('ttt-injected-theme-styles');
     if (styleElement) {
         styleElement.remove();
@@ -265,10 +259,9 @@ function requestBlacklistStatus() {
 }
 
 
-// Esegui la richiesta iniziale al background script al caricamento del content script
-// Assicurati che il DOM sia pronto se la UI di blocco deve essere iniettata immediatamente.
+// richiesta iniziale al background script al caricamento del content script (DOM pronto)
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', requestBlacklistStatus);
 } else {
-    requestBlacklistStatus(); // DOM già pronto o quasi
+    requestBlacklistStatus(); // DOM già pronto 
 }

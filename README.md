@@ -9,21 +9,23 @@ OSS : l'estensione è cruciale per sfruttare le funzionalità relative al TimeTr
     ```bash
     cd TTT_extension
     ```
-
 2.  **Installa le dipendenze e compila TypeScript:**
+    Inserisci l'url relativo al localhost della PWA nel file src/types/userTypes.ts (default : https://localhost:5173)
+
+3.  **Installa le dipendenze e compila TypeScript:**
     Esegui i seguenti comandi per installare tutte le librerie necessarie e compilare il codice TypeScript in JavaScript:
     ```bash
     npm install
     tsc
     ```
 
-3.  **Esegui la build di produzione:**
+4.  **Esegui la build di produzione:**
     Questo comando utilizzerà Vite per compilare e ottimizzare il codice sorgente dell'estensione, creando i file pronti per essere caricati nel browser. La build verrà creata nella cartella `/dist`.
     ```bash
     npm run build
     ```
 
-4.  **Carica l'estensione nel browser (Chrome):**
+5.  **Carica l'estensione nel browser (Chrome):**
     Ora che hai la cartella `/dist` con la build dell'estensione, puoi caricarla in Chrome come estensione "non pacchettizzata":
     * Apri Google Chrome.
     * Digita `chrome://extensions` nella barra degli indirizzi e premi Invio.

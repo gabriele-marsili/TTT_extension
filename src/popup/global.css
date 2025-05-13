@@ -1,15 +1,14 @@
-/* Queste variabili saranno accessibili globalmente */
 :root {
-    /* global variables for the theme */
+    
     --background-light: #fefefed7;
     --background-dark: #1e1e1e;
-    /* Using a slightly darker dark background */
+    
     --color-light: black;
     --color-dark: white;
     --accent-color-light: #10B981;
-    /* Tailwind green-500 */
+    
     --accent-color-dark: #34D399;
-    /* Tailwind green-400 */
+    
     --button-background-light: #ffffff00;
     --button-background-dark: #333;
     --button-border-light: #15b680d4;
@@ -23,12 +22,12 @@
     --text-color-light: black;
     --text-color-dark: white;
     --site-item-background-light: #f9f9f9;
-    /* Light specific item background */
+    
     --site-item-background-dark: #2a2a2a;
-    /* Dark specific item background */
+    
 }
 
-/* Application of light theme variables based on .light class on body */
+
 body.light {
     --background: var(--background-light);
     --color: var(--color-light);
@@ -42,7 +41,7 @@ body.light {
     --site-item-background: var(--site-item-background-light);
 }
 
-/* Application of dark theme variables based on .dark class on body */
+
 body.dark {
     --background: var(--background-dark);
     --color: var(--color-dark);
@@ -56,29 +55,27 @@ body.dark {
     --site-item-background: var(--site-item-background-dark);
 }
 
-/* Base styles for the body, using theme variables */
+
 body {
     margin: 0;
-    /* Remove default body margin */
+    
     padding: 0;
-    /* Remove default body padding */
+    
     background-color: var(--background);
-    /* Apply theme background */
+    
     color: var(--color);
-    /* Apply theme text color */
+    
     font-family: sans-serif;
-    /* Set default font */
+    
     min-width: 400px;
-    /* Ensure the popup has a minimum width */
+    
     min-height: 250px;
-    /* Ensure a minimum height */
-    /* Max height/width can be controlled by Chrome, but min helps layout */
+    
     overflow-x: hidden;
-    /* Hide horizontal scrollbar if content overflows */
+    
 }
 
-/* Add styles for elements inside the body that should inherit theme variables */
-/* (These might also be styled within the Svelte component, but base styles can go here) */
+
 h1,
 h2,
 h3,
@@ -86,14 +83,11 @@ h4,
 h5,
 h6 {
     color: var(--text-color);
-    /* Headings use theme text color */
+
 }
 
-/* You can add other global styles here */
-
-/* Styles for scrollbars if needed globally */
 body::-webkit-scrollbar {
-    /* Custom scrollbar for the entire popup body */
+
     width: 8px;
 }
 
@@ -108,5 +102,3 @@ body::-webkit-scrollbar-thumb {
     border: 2px solid var(--background);
 }
 
-/* Styles from your style.css that might be general enough for here */
-/* .row-disposition, .baseButton, .elevated, etc. */

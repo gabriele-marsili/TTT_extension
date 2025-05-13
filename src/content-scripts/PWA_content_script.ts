@@ -29,15 +29,13 @@ function connectBridgePort() {
 
     bridgePort.onDisconnect.addListener(() => {
         console.warn(prefisso + 'Porta al background disconnessa. Tentativo di riconnessione...');
-        bridgePort = null; // Reset della porta
-        // Implementa un retry con back-off esponenziale qui
-        setTimeout(connectBridgePort, 1000); // Riprova dopo 1 secondo
-        // Puoi aggiungere un contatore di tentativi e un limite
+        bridgePort = null;         
+        setTimeout(connectBridgePort, 1000);
     });
 }
 
 window.postMessage({
-    type: 'TTT_EXTENSION_ID_BROADCAST', // A unique message type
+    type: 'TTT_EXTENSION_ID_BROADCAST', 
     payload: extensionId,
     source: 'TTT_EXTENSION_BRIDGE'
 }, window.location.origin); // Send only to the PWA's origin
