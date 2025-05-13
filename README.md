@@ -1,47 +1,38 @@
-# Svelte + TS + Vite
+## Installazione
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+Segui questi passaggi per installare e avviare l'estensione nel tuo browser (Chrome è il browser raccomandato per il testing e l'utilizzo).
 
-## Recommended IDE Setup
+OSS : l'estensione è cruciale per sfruttare le funzionalità relative al TimeTracker nella PWA TTT
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+1.  **Naviga nella root directory dell'estensione:**
+    Apri il tuo terminale o prompt dei comandi e spostati nella directory principale del progetto dell'estensione (presumibilmente chiamata `TTT_extension`):
+    ```bash
+    cd TTT_extension
+    ```
 
-## Need an official Svelte framework?
+2.  **Installa le dipendenze e compila TypeScript:**
+    Esegui i seguenti comandi per installare tutte le librerie necessarie e compilare il codice TypeScript in JavaScript:
+    ```bash
+    npm install
+    tsc
+    ```
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+3.  **Esegui la build di produzione:**
+    Questo comando utilizzerà Vite per compilare e ottimizzare il codice sorgente dell'estensione, creando i file pronti per essere caricati nel browser. La build verrà creata nella cartella `/dist`.
+    ```bash
+    npm run build
+    ```
 
-## Technical considerations
+4.  **Carica l'estensione nel browser (Chrome):**
+    Ora che hai la cartella `/dist` con la build dell'estensione, puoi caricarla in Chrome come estensione "non pacchettizzata":
+    * Apri Google Chrome.
+    * Digita `chrome://extensions` nella barra degli indirizzi e premi Invio.
+    * Abilita la **Modalità sviluppatore** (Developer mode) attivando l'interruttore in alto a destra.
+    * Clica sul pulsante **"Carica estensione non pacchettizzata"** (Load unpacked).
+    * Nella finestra di dialogo, naviga fino alla directory root del tuo progetto (`TTT_extension`) e seleziona la cartella **`/dist`** che è stata creata nel passaggio precedente.
+    * Clica su "Seleziona cartella".
 
-**Why use this over SvelteKit?**
+L'estensione dovrebbe ora apparire nell'elenco delle estensioni installate e dovrebbe essere attiva. Potrebbe essere necessario aggiornare o riavviare le schede del browser per vederla in azione.
 
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
-```
+L'estensione si sincronizza e viene utilizzata assieme alla PWA, che sarà responsabile dell'invio dei dati relativi al login.
+Una volta loggati nella PWA sarà possibile accedere anche all'estensione ed alle relative funzioni.

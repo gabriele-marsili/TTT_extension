@@ -47,7 +47,10 @@
           lastUserInfoUpdateTimestamp &&
           now - lastUserInfoUpdateTimestamp < LOGIN_VALIDITY_DURATION_MS
         ) {
-          console.log("userInfo.timeTrackerActive : ",userInfo.timeTrackerActive)
+          console.log(
+            "userInfo.timeTrackerActive : ",
+            userInfo.timeTrackerActive,
+          );
           if (userInfo.timeTrackerActive) {
             // User is logged in and login is recent (within 24h)
             console.log(
@@ -58,9 +61,8 @@
             requestTimeTrackerRules();
           } else {
             currentState = "loading";
-            waitingText = "Time Tracker Mode disabled, activate it via TTT app"
+            waitingText = "Time Tracker Mode disabled, activate it via TTT app";
           }
-
         } else {
           // User not logged in or login expired
           console.log(
@@ -75,11 +77,19 @@
     );
   }
 
+  async function syncronizeTimeTrackerRulesByLocalStorage() {
+    const storedData = await chrome.storage.local.get([
+      "timeTrackerRules",
+    ]);
+    timeTrackerRules = storedData.timeTrackerRules || [];
+  }
+
   function requestTimeTrackerRules() {
     console.log("Popup Svelte: Requesting tracking rules from background.");
     let reqID = "ID:" + Date.now();
 
     // Request the current list of rules from the ext background script
+    //richiede regole in modo asincrono :
     chrome.runtime.sendMessage(
       { type: "GET_TIME_TRACKER_RULES", requestId: reqID },
       (response) => {
@@ -124,10 +134,13 @@
           console.error(
             "Popup Svelte: Invalid response or missing 'timeTrackerRules' from background.",
           );
-          // Optionally set a visible message here
+          syncronizeTimeTrackerRulesByLocalStorage()
+          .then(()=>console.log(prefisso+"tt rules sincronizzate"))
         }
       },
     );
+
+    
   }
 
   // --- Lifecycle: Actions to perform after mount ---

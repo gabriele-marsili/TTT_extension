@@ -95,7 +95,7 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
         };
     });
     timeTrackerRules = updatedRules;//aggiorna lista locale
-
+    console.log(prefisso+"updated tt rules: ",timeTrackerRules)
     const activeRuleSiteNames = new Set<string>(
         rules.map(rule => rule.site_or_app_name)
     );
@@ -108,7 +108,7 @@ function updateRules(rules: TimeTrackerRuleObj[]) {
 
 
     console.log('Background: Regole di tracking aggiornate dalla PWA:', timeTrackerRules);
-    scheduleSaveState(); // Pianifica il salvataggio dopo l'aggiornamento
+    saveStateImmediate(); // Pianifica il salvataggio dopo l'aggiornamento
     checkAndNotifyBlacklist(); // Controlla se la tab attiva è blacklisted con le nuove regole
 
     //response to waiting requests
@@ -371,8 +371,7 @@ async function trackTime() {
         return; // Non c'è nulla da tracciare
     }
 
-    //check se time tracker mode è attiva :
-    await loadState()//=>update user info
+    //check se time tracker mode è attiva :    
     if (userInfo && !userInfo.timeTrackerActive) return;
 
     // Trova la regola che corrisponde all'URL della tab attiva
